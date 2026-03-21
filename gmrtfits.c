@@ -1,0 +1,285 @@
+#include "gmrtfits.h"
+
+void gmrtfits_prepare ( gmrtfits_t *fits, const char *filename, unsigned npol, unsigned nchan, float fedge, float bw, unsigned ngulp, unsigned fftint, unsigned bitdepth ) {
+	// sign(bw) determines LSB or USB
+	
+	fits->filename = (char*) malloc ( sizeof(char) * ( 1 + strlen(filename) ) );
+	strcpy ( fits->filename, filename );
+	
+	fits->status  = 0;
+	fits->npol    = npol;
+	fits->nchan   = nchan;
+	fits->ngulp   = ngulp;
+
+	fits->nchan_npol       = nchan * npol;
+	fits->ngulp_nchan_npol = ngulp * nchan * npol;
+
+	fits->data      = (char*) malloc ( sizeof(char)  * ngulp * nchan * npol );
+	fits->weights   = (float*)malloc ( sizeof(float) * nchan );
+	fits->scales    = (float*)malloc ( sizeof(float) * nchan * npol );
+	fits->offsets   = (float*)malloc ( sizeof(float) * nchan * npol );
+
+	fits->bitdepth  = bitdepth;
+	fits->fftint    = fftint;
+
+
+	if (bw < 0) fits->bandwidth_mhz = -1.0 * bw;
+	fits->bandwidth_mhz  = bw;
+	fits->center_freqs   = (float*) malloc ( sizeof(float) * nchan );
+
+	int ichan = 0;
+	float  cbw      = bw / nchan;
+	for (;ichan < nchan; ichan++) {
+		fits->center_freqs [ ichan ] = fedge + ( ichan + 0.5 )*cbw;
+	}
+
+	fits->tsamp     = fftint * nchan / bw / 1E6;
+}
+
+void gmrtfits_close ( gmrtfits_t *fits ) {
+	free ( fits->center_freqs );
+	free ( fits->offsets );
+	free ( fits->scales );
+	free ( fits->weights );
+	free ( fits->data );
+
+	free ( fits->filename );
+	
+
+	fits_close_file ( fits->fits, &fits->status );
+	if ( fits->status ) {
+		fits_report_error(stderr, fits->status);
+	}
+}
+
+void gmrtfits_create ( gmrtfits_t *fits ) {
+	fits->status = 0;
+
+	int bitpix   = 8;
+	int naxis    = 0;
+	long *naxes  = NULL;
+	int ival     = 0;
+	double dval  = 0.0;
+	float  fval  = 0.0;
+	long   lval  = 0;
+
+	fits_create_file(&fits->fits, fits->filename, &fits->status);
+	fits_create_img(fits->fits, bitpix, naxis, naxes, &fits->status);
+
+	fits_update_key(fits->fits, TSTRING, "HDRVER","5.4gmrt","Header version, modified for uGMRT", &fits->status);
+	fits_update_key(fits->fits,TSTRING,"FITSTYPE","GMRTFITS","PSRFITS definition for uGMRT beamform data",&fits->status);
+
+	fits_update_key(fits->fits,TSTRING,"TELESCOP","GMRT","upgraded Giant Metrewave Radio Telescope",&fits->status);
+
+	// taken from observatories.dat from tempo2
+	dval = 1656342.30; // ANT_X
+	fits_update_key(fits->fits,TDOUBLE,"ANT_X", &dval, "[m] Antenna ITRF X-coordiante",&fits->status);
+	dval = 5797947.77; // ANT_Y
+	fits_update_key(fits->fits,TDOUBLE,"ANT_Y", &dval,"[m] Antenna ITRF X-coordiante",&fits->status);
+	dval = 2073243.16; // ANT_Z
+	fits_update_key(fits->fits,TDOUBLE,"ANT_Z", &dval,"[m] Antenna ITRF X-coordiante",&fits->status);
+
+	// obsmode
+	fits_update_key (fits->fits, TSTRING, "OBS_MODE", "SEARCH", "SEARCH by default", &fits->status );
+
+	// frequency
+	dval = fits->center_freqs [ fits->nchan / 2 ];
+	fits_update_key (fits->fits, TDOUBLE, "OBSFREQ", &dval, "[MHz] Centre frequency for observation", &fits->status);
+	dval = fits->bandwidth_mhz;
+	fits_update_key (fits->fits, TDOUBLE, "OBSBW", &dval, "[MHz] Bandwidth of observation", &fits->status);
+	ival = fits->nchan;
+	fits_update_key (fits->fits, TINT, "NCHAN", &ival, "Number of channels", &fits->status);
+	ival = 1;
+	fits_update_key(fits->fits, TINT, "NBIN", &ival, "Nr of bins (PSR/CAL mode; else 1) ", &fits->status);
+
+	// coordinates
+	// XXX As of now, uGMRT does not provide pointing information with the raw file
+	// so maybe ignore this.
+	/*
+		fits_update_key ( fits->fits, TSTRING, "COORD_MD", "J2000.0", "ICRS J2000", &fits->status );
+		fval = 2000.0;
+		fits_update_key ( fits->fits, TFLOAT, "EQUINOX", &fval, "Equinox", &fits->status );
+		fits_update_key ( fits->fits, TSTRING, "RA", fits->rastr, "Right Ascension (hh:mm:ss.sss)", &fits->status );
+		fits_update_key ( fits->fits, TSTRING, "DEC", fits->decstr, "Declination ([+-]dd:mm:ss.sss)", &fits->status );
+		fits_update_key ( fits->fits, TDOUBLE, "RADEG", fits->ra, "[deg] Right Ascension", &fits->status );
+		fits_update_key ( fits->fits, TDOUBLE, "DECDEG", fits->dec, "[deg] Declination", &fits->status );
+	*/
+	fits_update_key(fits->fits, TSTRING, "SRC_NAME", fits->source, "Source name", &fits->status);
+	
+	// time
+	
+	lval = 61010;
+	fits_update_key ( fits->fits, TLONG, "STT_IMJD", &lval, "Start MJD (UTC)" ,&fits->status );
+	lval = 45000;
+	fits_update_key ( fits->fits, TLONG, "STT_SMJD", &lval, "Start Seconds (past 00h, UTC)" ,&fits->status );
+	dval = 0.5;
+	fits_update_key ( fits->fits, TDOUBLE, "STT_OFFS", &dval, "[s] Start time offset" ,&fits->status );
+	dval = 61010.5;
+	fits_update_key ( fits->fits, TDOUBLE, "STT_MJD", &dval, "MJD (UTC)" ,&fits->status );
+	/*fits_update_key ( fits->fits, TSTRING, "STT_OBS", fits->datetime, "Human readable (UTC)" ,&fits->status );*/
+
+	fits_write_date(fits->fits, &fits->status);
+
+	if ( fits->status ) {
+		printf (" at gmrtfits_create ...\n");
+		fits_report_error(stderr, fits->status);
+	}
+}
+
+void gmrtfits_subint_open ( gmrtfits_t *fits ) {
+	/*char *ttypes, *tforms, *tunits;*/
+
+	char *ttypes[] = { "ISUBINT", "TSUBINT", "OFFS_SUB", "NPOL", "DAT_FREQ", "DAT_WTS", "DAT_OFFS", "DAT_SCL", "DATA"};
+	char *tunits[] = {"", "s", "s", "", "MHz", "", "", "", ""};
+	/*char tforms[9][16];*/
+	char *tforms[9];
+	for (int i = 0; i < 9; i++) tforms[i] = malloc ( sizeof(char) * 16 );
+	long naxes [3];
+
+	int ival;
+	float fval;
+
+	sprintf (tforms[0], "1J");
+	sprintf (tforms[1], "1D");
+	sprintf (tforms[2], "1D");
+	sprintf (tforms[3], "1J");
+	sprintf (tforms[4], "%dD", fits->nchan );
+	sprintf (tforms[5], "%dD", fits->nchan_npol );
+	sprintf (tforms[6], "%dD", fits->nchan_npol );
+	sprintf (tforms[7], "%dD", fits->nchan_npol );
+	sprintf (tforms[8], "%dB", fits->ngulp_nchan_npol );
+
+	fits_create_tbl( fits->fits, BINARY_TBL, 0, 9, ttypes, tforms, tunits, "SUBINT", &fits->status);
+	// free them
+	for (int i = 0; i < 9; i++) free ( tforms[i] );
+
+	naxes[0] = fits->ngulp;
+	naxes[1] = fits->nchan;
+	naxes[2] = fits->npol;
+
+	fits_write_tdim( fits->fits, 9, 3, naxes, &fits->status );
+
+	fits->nrow     = 1;
+
+	// header
+	fits_update_key(fits->fits,TSTRING,"INT_TYPE","TIME","search mode in time",&fits->status);
+	fits_update_key(fits->fits,TSTRING,"INT_UNIT","SEC","Unit of time axis",&fits->status);
+	fits_update_key(fits->fits,TSTRING,"SCALE","SAMPLES","Digital samples.",&fits->status);
+
+	// npol, nchan
+	ival  = fits->npol;
+	fits_update_key(fits->fits,TINT,"NPOL",&ival,"Number of polarization.",&fits->status);
+	ival  = fits->nchan;
+	fits_update_key(fits->fits,TINT,"NCHAN",&ival,"Number of frequency channels.",&fits->status);
+	ival  = fits->ngulp;
+	fits_update_key(fits->fits,TINT,"NSBLK",&ival,"Number of samples per block.",&fits->status);
+	ival  = fits->bitdepth;
+	fits_update_key(fits->fits,TINT,"NBITS",&ival,"Number of bits per datum.",&fits->status);
+	ival  = 1;
+	fits_update_key(fits->fits, TINT, "NBIN", &ival, "Nr of bins (PSR/CAL mode; else 1) ", &fits->status);
+	fval  = fits->tsamp;
+	fits_update_key(fits->fits, TFLOAT, "TBIN", &fval, "[s] Time per bin or sample ", &fits->status);
+
+	fits_update_key(fits->fits,TSTRING,"POL_TYPE",fits->pol_type,"Polarization type.",&fits->status);
+
+}
+
+void gmrtfits_subint_real_single ( gmrtfits_t *fits, real_t *data ) {
+	// data is (ngulp, nchan) 
+	// npol = 1 in this case
+	
+	int colnum  = 0;
+	int    ival = 0;
+	double dval = 0.0;
+
+	// normalize data
+	normalize_data  ( fits, data );
+	
+	// ISUBINT
+	colnum  = 1;
+	fits_write_col( fits->fits, TINT, colnum, fits->nrow, 1, 1, &fits->nrow, &fits->status );
+
+	// TSUBINT
+	colnum  = 2;
+	dval    = fits->ngulp * fits->tsamp;
+	fits_write_col( fits->fits, TDOUBLE, colnum, fits->nrow, 1, 1, &dval, &fits->status );
+	
+	// OFFS_SUB
+	colnum  = 3;
+	dval    =  (fits->nrow + 0.5) * fits->ngulp * fits->tsamp;
+	fits_write_col( fits->fits, TDOUBLE, colnum, fits->nrow, 1, 1, &dval, &fits->status );
+	// middle of the subint
+	
+	// NPOL
+	colnum  = 4;
+	ival    = 1;
+	fits_write_col( fits->fits, TINT, colnum, fits->nrow, 1, 1, &ival, &fits->status );
+
+	// DAT_FREQ
+	colnum  = 5;
+	fits_write_col( fits->fits, TFLOAT, colnum, fits->nrow, 1, fits->nchan, fits->center_freqs, &fits->status );
+
+	// DAT_WTS
+	colnum  = 6;
+	fits_write_col( fits->fits, TFLOAT, colnum, fits->nrow, 1, fits->nchan_npol, fits->weights, &fits->status );
+
+	// DAT_OFFS
+	colnum  = 7;
+	fits_write_col( fits->fits, TFLOAT, colnum, fits->nrow, 1, fits->nchan_npol, fits->offsets, &fits->status );
+
+	// DAT_SCL
+	colnum  = 8;
+	fits_write_col( fits->fits, TFLOAT, colnum, fits->nrow, 1, fits->nchan_npol, fits->scales, &fits->status );
+
+	// DATA
+	colnum  = 9;
+	fits_write_col( fits->fits, TBYTE, colnum, fits->nrow, 1, fits->ngulp_nchan_npol, fits->data, &fits->status );
+
+
+	if ( fits->status ) {
+		printf (" at gmrtfits_subint_real_single row=%d ...\n", fits->nrow);
+		fits_report_error(stderr, fits->status);
+	}
+
+	fits->nrow++;
+}
+
+void normalize_data ( gmrtfits_t *fits, real_t *data ) {
+	// XXX no pol reordering here
+	// data is fits->(ngulp, nchan, npol)
+	// scales and offsets are (nchan, npol)
+	// DATA = DAT_WTS * ( BATA*SCALES + OFFSETS )
+	
+	// iterators
+	unsigned isamp, ichan, ipol;
+
+	// compute min and max (nchan, npol)
+	// min is offset and max-min is scales
+	real_t _offset, _scale;
+	
+	for (ipol = 0; ipol < fits->npol; ipol++) {
+		for (ichan = 0; ichan < fits->nchan; ichan++) {
+
+			real_t _min = FLT_MAX, _max = -FLT_MAX;
+
+			// find min and max per every sample
+			for (isamp = 0; isamp < fits->ngulp; isamp++) {
+				real_t _d = data [ ipol + fits->npol*ichan + fits->nchan_npol*isamp ];
+
+				if ( _d < _min ) _min = _d;
+				if ( _d > _max ) _max = _d;
+			} // nsamp
+
+			_offset    = _min;
+			_scale     = (_max - _min) / 255.0;
+
+			fits->offsets [ ipol + fits->npol*ichan ] = _offset;
+			fits->scales [ ipol + fits->npol*ichan ]  = _scale;
+
+			for (isamp = 0; isamp < fits->ngulp; isamp++) {
+				real_t _d = data [ ipol + fits->npol*ichan + fits->nchan_npol*isamp ];
+				fits->data [ ipol + fits->npol*ichan + fits->nchan_npol*isamp ] = (char) ( ( _d - _offset ) / _scale );
+			} // nsamp
+		} // chan
+	} // pol
+}
