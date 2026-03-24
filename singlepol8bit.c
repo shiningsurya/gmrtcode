@@ -35,7 +35,8 @@ int main() {
 	/*const char *oufile_path = "/tmp/baseband/testfbfloat32.raw";*/
 	const char *oufile_path = "/tmp/baseband/test.fits";
 
-	FILE *infile, *outfile;
+	/*FILE *infile, *outfile;*/
+	FILE *infile;
 
 	char *volt_read = (char*) malloc ( VREAD * sizeof (char) );
 	double *volt_double = (double*) malloc ( VREAD * sizeof(double) );
@@ -92,7 +93,6 @@ int main() {
 	gmrtfits_subint_open ( &gf );
 
 	for (iread = 0; iread < nreads; iread++) {
-
 		printf( " iread=%d .. ", iread );
 		// read
 		read_bytes = fread ( volt_read, sizeof(char), VREAD, infile );
@@ -121,7 +121,7 @@ int main() {
 				outfb[ kl ]  = 0.0;
 				for ( iavg = 0; iavg < NTAVG; iavg++ ) {
 					jl = il + iavg;
-					fil = sqrt (fdata_off1[jl][0]*fdata_off1[jl][0] + fdata_off1[jl][1]*fdata_off1[jl][1]);
+					fil = fdata_off1[jl][0]*fdata_off1[jl][0] + fdata_off1[jl][1]*fdata_off1[jl][1];
 					//outfb [ ichan*NCHAN + isamp ] += fil;
 					outfb [ kl ] += fil;
 				}
