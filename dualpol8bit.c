@@ -86,8 +86,8 @@ int main() {
 		fprintf(stderr, " Unexpected case.");
 	}
 
-	/*nreads  = infilesize1 / VREAD;*/
-	nreads  = 16;
+	nreads  = infilesize1 / VREAD;
+	/*nreads  = 16;*/
 
 	int ng = VREAD;
 	// forward FFT
