@@ -94,7 +94,7 @@ int main() {
 	}
 
 	/*nreads  = infilesize1 / VREAD;*/
-	nreads  = 42;
+	nreads  = 16;
 
 	int ng = VREAD;
 	// forward FFT

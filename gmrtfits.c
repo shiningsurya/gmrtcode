@@ -262,7 +262,8 @@ void gmrtfits_subint_real ( gmrtfits_t *fits, real_t *data, unsigned int start, 
 				// no
 				/*fits->data [ osamp + fits->nsblk*ipol + fits->nsblk*fits->npol*ichan ] = (char) ( ( _d - _offset ) / _scale );*/
 				/*fits->data [ osamp + fits->nsblk*ichan + fits->nsblk*fits->nchan*ipol ] = (char) ( ( _d - _offset ) / _scale );*/
-				fits->data [ ichan + fits->nchan*ipol + fits->nchan*fits->npol*osamp ] = (char) ( ( _d - _offset ) / _scale );
+				/*fits->data [ ichan + fits->nchan*ipol + fits->nchan*fits->npol*osamp ] = (char) ( ( _d - _offset ) / _scale );*/
+				fits->data [ ichan + fits->nchan*ipol + fits->nchan*fits->npol*osamp ] = (char) 0;
 				/*fits->data [ ichan + fits->nchan*osamp + fits->nchan*fits->nsblk*ipol ] = (char) ( ( _d - _offset ) / _scale );*/
 				/*fits->data [ ipol + fits->npol*ichan + fits->npol*fits->nchan*osamp ] = (char) ( ( _d - _offset ) / _scale );*/
 				/*fits->data [ ipol + fits->npol*osamp + fits->npol*fits->nsblk*ichan ] = (char) ( ( _d - _offset ) / _scale );*/
@@ -318,6 +319,7 @@ void gmrtfits_subint_real ( gmrtfits_t *fits, real_t *data, unsigned int start, 
 		/*exit (1);*/
 	}
 
+	fits_flush_buffer( fits->fits, 0, &fits->status );
 	fits->nrow++;
 }
 
