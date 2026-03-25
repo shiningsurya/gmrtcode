@@ -5,7 +5,7 @@ LFLAGS := -lm -lcfitsio -lfftw3
 
 .PHONY: clean
 
-TARGETS := singlepol8bit
+TARGETS := singlepol8bit dualpol8bit 
 
 %.o : %.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -17,5 +17,5 @@ dualpol8bit: gmrtfits.o dualpol8bit.o
 	$(CC) $(LFLAGS) -o $@ $^
 
 clean:
-	@rm -fr %.o
+	@rm -fr *.o
 	@rm -fr $(TARGETS)

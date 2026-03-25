@@ -3,8 +3,7 @@
 void gmrtfits_prepare ( gmrtfits_t *fits, const char *filename, double mjd, unsigned npol, unsigned nchan, float fedge, float bw, unsigned nsblk, unsigned fftint, unsigned bitdepth ) {
 	// sign(bw) determines LSB or USB
 	
-	fits->filename = (char*) malloc ( sizeof(char) * ( 1 + strlen(filename) ) );
-	strcpy ( fits->filename, filename );
+	fits->filename = strdup ( filename );
 	
 	fits->status  = 0;
 	fits->npol    = npol;
@@ -173,6 +172,9 @@ void gmrtfits_subint_open ( gmrtfits_t *fits ) {
 	for (int i = 0; i < 9; i++) free ( tforms[i] );
 
 	/*naxes[0] = fits->nsblk;*/
+	/*naxes[1] = fits->npol;*/
+	/*naxes[2] = fits->nchan;*/
+	/*naxes[0] = fits->nsblk;*/
 	/*naxes[1] = fits->nchan;*/
 	/*naxes[2] = fits->npol;*/
 	naxes[0] = fits->nchan;
@@ -207,8 +209,9 @@ void gmrtfits_subint_open ( gmrtfits_t *fits ) {
 }
 
 void gmrtfits_subint_real ( gmrtfits_t *fits, real_t *data, unsigned int start, unsigned int ngulp ) {
-	// data is (nchan, npol, ngulp) 
-	// need to write (nchan, npol, start:(start+nsblk))
+	// the data layout is confusing since CFITSIO behaves like FORTRAN with column major ordering
+	// (1) data is (ngulp, npol, nchan) 
+	// need to write (start:(start+nsblk), npol, nchan)
 	
 	int colnum  = 0;
 	int    ival = 0;
@@ -219,20 +222,23 @@ void gmrtfits_subint_real ( gmrtfits_t *fits, real_t *data, unsigned int start, 
 	// DATA = DAT_WTS * ( BATA*SCALES + OFFSETS )
 	
 	// iterators
-	unsigned isamp, osamp, esamp, ichan, ipol;
-	esamp       = start + fits->nsblk;
+	unsigned isamp, osamp, ichan, ipol;
+	unsigned stop  = start + fits->nsblk;
 
 	// compute min and max (nchan, npol)
 	// min is offset and max-min is scales
 	real_t _offset, _scale;
 
-	for (ichan = 0; ichan < fits->nchan; ichan++) {
-		for (ipol = 0; ipol < fits->npol; ipol++) {
+	// data is (nsblk, npol, nchan)
+	// i am sure of this
+	for (ipol = 0; ipol < fits->npol; ipol++) {
+		for (ichan = 0; ichan < fits->nchan; ichan++) {
 
 			real_t _min = FLT_MAX, _max = -FLT_MAX;
+
 			// find min and max per (nchan,npol)
-			for (isamp  = start; isamp < esamp; isamp++) {
-				real_t _d = data [ isamp + ipol*ngulp + ichan*ngulp*fits->npol ];
+			for (isamp  = start; isamp < stop; isamp++) {
+				real_t _d = data [ ichan + fits->nchan*ipol + fits->nchan_npol*isamp ];
 
 				if ( _d < _min ) _min = _d;
 				if ( _d > _max ) _max = _d;
@@ -241,18 +247,28 @@ void gmrtfits_subint_real ( gmrtfits_t *fits, real_t *data, unsigned int start, 
 			_offset    = _min;
 			_scale     = (_max - _min) / 255.0;
 
+			// this seems right
+			fits->offsets [ ichan + fits->nchan*ipol ] = _offset;
+			fits->scales  [ ichan + fits->nchan*ipol ] = _scale;
 			// CHECK ordering
-			fits->offsets [ ichan + ipol*fits->nchan ] = _offset;
-			fits->scales  [ ichan + ipol*fits->nchan ] = _scale;
 			/*fits->offsets [ ipol + fits->npol*ichan ] = _offset;*/
 			/*fits->scales  [ ipol + fits->npol*ichan ] = _scale;*/
 
-			for (isamp = start,osamp = 0; isamp < esamp; isamp++, osamp++) {
-				real_t _d = data [ isamp + ipol*ngulp + ichan*ngulp*fits->npol ];
-				fits->data [ osamp + ipol*fits->nsblk + ichan*fits->nsblk*fits->npol ] = (char) ( ( _d - _offset ) / _scale );
+			for (isamp = start,osamp = 0; isamp < stop; isamp++, osamp++) {
+				real_t _d = data [ ichan + fits->nchan*ipol + fits->nchan_npol*isamp ];
+				/*fits->data [ osamp + fits->nsblk*ipol + fits->nsblk*fits->npol*ichan ] = (char) ( ( _d - _offset ) / _scale );*/
+				// trials
+				/*fits->data [ ichan + fits->nchan*ipol + fits->nchan_npol*osamp ] = (char) ( ( _d - _offset ) / _scale );*/
+				// no
+				/*fits->data [ osamp + fits->nsblk*ipol + fits->nsblk*fits->npol*ichan ] = (char) ( ( _d - _offset ) / _scale );*/
+				/*fits->data [ osamp + fits->nsblk*ichan + fits->nsblk*fits->nchan*ipol ] = (char) ( ( _d - _offset ) / _scale );*/
+				fits->data [ ichan + fits->nchan*ipol + fits->nchan*fits->npol*osamp ] = (char) ( ( _d - _offset ) / _scale );
+				/*fits->data [ ichan + fits->nchan*osamp + fits->nchan*fits->nsblk*ipol ] = (char) ( ( _d - _offset ) / _scale );*/
+				/*fits->data [ ipol + fits->npol*ichan + fits->npol*fits->nchan*osamp ] = (char) ( ( _d - _offset ) / _scale );*/
+				/*fits->data [ ipol + fits->npol*osamp + fits->npol*fits->nsblk*ichan ] = (char) ( ( _d - _offset ) / _scale );*/
 			} // nsamp
-		} // pol
-	} // freq
+		} // freq
+	} // pol
 	
 	// ISUBINT
 	colnum  = 1;
@@ -300,49 +316,8 @@ void gmrtfits_subint_real ( gmrtfits_t *fits, real_t *data, unsigned int start, 
 		fits_report_error(stderr, fits->status);
 		raise(SIGINT);
 		/*exit (1);*/
-
 	}
 
 	fits->nrow++;
 }
 
-void normalize_data_old ( gmrtfits_t *fits, real_t *data ) {
-#warning Do not use this version
-	// XXX no pol reordering here
-	// data is fits->(nchan, npol, nsblk)
-	// scales and offsets are (nchan, npol)
-	// DATA = DAT_WTS * ( BATA*SCALES + OFFSETS )
-	
-	// iterators
-	unsigned isamp, ichan, ipol;
-
-	// compute min and max (nchan, npol)
-	// min is offset and max-min is scales
-	real_t _offset, _scale;
-	
-	for (ipol = 0; ipol < fits->npol; ipol++) {
-		for (ichan = 0; ichan < fits->nchan; ichan++) {
-
-			real_t _min = FLT_MAX, _max = -FLT_MAX;
-
-			// find min and max per every sample
-			for (isamp = 0; isamp < fits->nsblk; isamp++) {
-				real_t _d = data [ ipol + fits->npol*ichan + fits->nchan_npol*isamp ];
-
-				if ( _d < _min ) _min = _d;
-				if ( _d > _max ) _max = _d;
-			} // nsamp
-
-			_offset    = _min;
-			_scale     = (_max - _min) / 255.0;
-
-			fits->offsets [ ipol + fits->npol*ichan ] = _offset;
-			fits->scales [ ipol + fits->npol*ichan ]  = _scale;
-
-			for (isamp = 0; isamp < fits->nsblk; isamp++) {
-				real_t _d = data [ ipol + fits->npol*ichan + fits->nchan_npol*isamp ];
-				fits->data [ ipol + fits->npol*ichan + fits->nchan_npol*isamp ] = (char) ( ( _d - _offset ) / _scale );
-			} // nsamp
-		} // chan
-	} // pol
-}
