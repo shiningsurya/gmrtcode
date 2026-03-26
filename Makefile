@@ -1,6 +1,6 @@
 
 CC     := gcc
-CFLAGS := -g -Wall 
+CFLAGS := -g -Wall -O2 -Warray-bounds=2
 LFLAGS := -lm -lcfitsio -lfftw3
 
 .PHONY: clean

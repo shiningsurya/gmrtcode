@@ -171,15 +171,10 @@ void gmrtfits_subint_open ( gmrtfits_t *fits ) {
 	// free them
 	for (int i = 0; i < 9; i++) free ( tforms[i] );
 
-	/*naxes[0] = fits->nsblk;*/
-	/*naxes[1] = fits->npol;*/
-	/*naxes[2] = fits->nchan;*/
-	/*naxes[0] = fits->nsblk;*/
-	/*naxes[1] = fits->nchan;*/
-	/*naxes[2] = fits->npol;*/
-	naxes[0] = fits->nchan;
+	// astropy.io.fits needs me to save in reverse order
+	naxes[0] = fits->nsblk;
 	naxes[1] = fits->npol;
-	naxes[2] = fits->nsblk;
+	naxes[2] = fits->nchan;
 
 	fits_write_tdim( fits->fits, 9, 3, naxes, &fits->status );
 
@@ -210,7 +205,6 @@ void gmrtfits_subint_open ( gmrtfits_t *fits ) {
 
 void gmrtfits_subint_real ( gmrtfits_t *fits, real_t *data, unsigned int start, unsigned int ngulp ) {
 	// the data layout is confusing since CFITSIO behaves like FORTRAN with column major ordering
-	// (1) data is (ngulp, npol, nchan) 
 	// need to write (start:(start+nsblk), npol, nchan)
 	
 	int colnum  = 0;
@@ -247,26 +241,13 @@ void gmrtfits_subint_real ( gmrtfits_t *fits, real_t *data, unsigned int start, 
 			_offset    = _min;
 			_scale     = (_max - _min) / 255.0;
 
-			// this seems right
 			fits->offsets [ ichan + fits->nchan*ipol ] = _offset;
 			fits->scales  [ ichan + fits->nchan*ipol ] = _scale;
-			// CHECK ordering
-			/*fits->offsets [ ipol + fits->npol*ichan ] = _offset;*/
-			/*fits->scales  [ ipol + fits->npol*ichan ] = _scale;*/
 
 			for (isamp = start,osamp = 0; isamp < stop; isamp++, osamp++) {
 				real_t _d = data [ ichan + fits->nchan*ipol + fits->nchan_npol*isamp ];
-				/*fits->data [ osamp + fits->nsblk*ipol + fits->nsblk*fits->npol*ichan ] = (char) ( ( _d - _offset ) / _scale );*/
-				// trials
-				/*fits->data [ ichan + fits->nchan*ipol + fits->nchan_npol*osamp ] = (char) ( ( _d - _offset ) / _scale );*/
-				// no
-				/*fits->data [ osamp + fits->nsblk*ipol + fits->nsblk*fits->npol*ichan ] = (char) ( ( _d - _offset ) / _scale );*/
-				/*fits->data [ osamp + fits->nsblk*ichan + fits->nsblk*fits->nchan*ipol ] = (char) ( ( _d - _offset ) / _scale );*/
-				/*fits->data [ ichan + fits->nchan*ipol + fits->nchan*fits->npol*osamp ] = (char) ( ( _d - _offset ) / _scale );*/
-				fits->data [ ichan + fits->nchan*ipol + fits->nchan*fits->npol*osamp ] = (char) 0;
-				/*fits->data [ ichan + fits->nchan*osamp + fits->nchan*fits->nsblk*ipol ] = (char) ( ( _d - _offset ) / _scale );*/
-				/*fits->data [ ipol + fits->npol*ichan + fits->npol*fits->nchan*osamp ] = (char) ( ( _d - _offset ) / _scale );*/
-				/*fits->data [ ipol + fits->npol*osamp + fits->npol*fits->nsblk*ichan ] = (char) ( ( _d - _offset ) / _scale );*/
+				fits->data [ ichan + fits->nchan*ipol + fits->nchan_npol*osamp ] = (char) ( ( _d - _offset ) / _scale );
+				/*fits->data [ ichan + fits->nchan*ipol + fits->nchan_npol*osamp ] = (char) ( ipol + (64*ichan/2048));*/
 			} // nsamp
 		} // freq
 	} // pol

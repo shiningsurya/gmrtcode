@@ -8,12 +8,12 @@
 
 #define NPOL 4
 #define NCHAN 2048
-#define NSBLK 4096
-#define NGULP 4096
+#define NSBLK 2048
+#define NGULP 32768
 // time integration
-#define INTEGRATION 1
+#define INTEGRATION 8
 #define OGULP ( NGULP / INTEGRATION )
-#define NSUBPERGULP ( OGULP / NSBLK )
+// ensure OGULP is integer multiple of NSBLK
 // channelizer sizes
 // These are per-pol
 #define VREAD ( 2 * NCHAN * NGULP )
@@ -37,39 +37,44 @@ void print_help() {
 
 int main() {
 	print_help ();
-	const char *pol1_infile_path = "/tmp/baseband/C02pol1200MHz8bitsCRAB550MHz_10s.raw";
-	const char *pol2_infile_path = "/tmp/baseband/C02pol1200MHz8bitsCRAB550MHz_10s.raw";
+	const char *pol1_infile_path = "/home/shining/C02pol1200MHz8bitsCRAB550MHz_10s.raw";
+	const char *pol2_infile_path = "/home/shining/C02pol1200MHz8bitsCRAB550MHz_10s.raw";
 	/*const char *toufile_path = "/tmp/baseband/testfb_float.raw";*/
 	const char *oufile_path = "/tmp/baseband/testfs.fits";
 	double mjd            = 60900.23741898148;
 
+	// file pointers
 	/*FILE *infile, *outfile;*/
 	FILE *pol1_infile, *pol2_infile;
 	FILE *tou1, *tou2, *tou3;
-	FILE *toutfile;
+	/*FILE *toutfile;*/
 
+	// variables
+	unsigned long read_bytes;
+	unsigned long infilesize1, infilesize2;
+
+	unsigned iread;
+	unsigned nreads;
+	unsigned ichan, isamp, osamp;
+
+	// FFTW
+	fftw_plan pforward, pbackward1, pbackward2;
+	fftw_complex *fdata;
+
+	// array mallocs
 	char *pol1_volt_read  = (char*) malloc ( VREAD * sizeof (char) );
 	char *pol2_volt_read  = (char*) malloc ( VREAD * sizeof (char) );
 	double *volt_double   = (double*) malloc ( 2 * VREAD * sizeof(double) );
 	float *outfb          = (float*)malloc ( NPOL * OGULP * NCHAN * sizeof(float) );
+
+	fdata = (fftw_complex*) fftw_alloc_complex  ( 2 * FFTCOMPLEXSIZE );
+
 	//-------------------------//
 	gmrtfits_t gf;
 	gmrtfits_prepare ( &gf, oufile_path, mjd, NPOL, NCHAN, 550.0f, 200.0f, NSBLK, INTEGRATION, 8 );
 	gmrtfits_create ( &gf );
 	//-------------------------//
 
-
-	fftw_plan pforward, pbackward1, pbackward2;
-	fftw_complex *fdata;
-
-	unsigned long read_bytes;
-	unsigned long infilesize1, infilesize2;
-
-	unsigned iread;
-	unsigned nreads;
-	unsigned ichan, isamp, iavg;
-
-	fdata = (fftw_complex*) fftw_alloc_complex  ( 2 * FFTCOMPLEXSIZE );
 
 	// files open
 	pol1_infile  = fopen ( pol1_infile_path, "r" );
@@ -78,7 +83,7 @@ int main() {
 	/*tou1         = fopen ( "/tmp/baseband/testfb_data.raw" , "w" );*/
 	/*tou2         = fopen ( "/tmp/baseband/testfb_scales.raw" , "w" );*/
 	/*tou3         = fopen ( "/tmp/baseband/testfb_offsets.raw" , "w" );*/
-	/*toutfile = fopen ( toufile_path, "w+" );*/
+	/*toutfile = fopen ( "/tmp/baseband/toutf32.raw", "w+" );*/
 
 	// get file size
 	fseek ( pol1_infile, 0L, SEEK_END );
@@ -94,7 +99,7 @@ int main() {
 	}
 
 	/*nreads  = infilesize1 / VREAD;*/
-	nreads  = 16;
+	nreads  = 32;
 
 	int ng = VREAD;
 	// forward FFT
@@ -112,7 +117,7 @@ int main() {
 	pbackward1 = fftw_plan_many_dft ( 1, &ng, NCHAN, fdata+1, NULL, 1, NGULP, fdata+1, NULL, 1, NGULP, FFTW_BACKWARD, FFTW_ESTIMATE );
 	pbackward2 = fftw_plan_many_dft ( 1, &ng, NCHAN, fdata+FFTCOMPLEXSIZE+1, NULL, 1, NGULP, fdata+FFTCOMPLEXSIZE+1, NULL, 1, NGULP, FFTW_BACKWARD, FFTW_ESTIMATE );
 
-	printf (" prepared plans .. starting ...\n");
+	printf (" prepared plans .. starting ... total nreads=%d\n", nreads);
 	gmrtfits_subint_open ( &gf );
 
 	for (iread = 0; iread < nreads; iread++) {
@@ -164,6 +169,7 @@ int main() {
 		 * It should be sent to CFITSIO as (nsamp, npol, nchan)
 		 * which will be stored as (nchan, npol, nsamp) in CFITSIO.
 		 * (3) no layout seems to work, now going with 
+		 * (4) now testing with (ngulp, npol, nchan)
 		 **/
 
 		// do direct read
@@ -183,10 +189,12 @@ int main() {
 				/*jj        = isamp + NPOL*NGULP*ichan;*/
 				// output index - TPF (2)
 				// ichan + NCHAN*ipol + NCHAN*NPOL*isamp
-				jj        = ichan +  NCHAN*NPOL*isamp;
+				jj        = ichan + NCHAN*NPOL*isamp;
 				// time-averaged output index
-				kk        = ichan + NCHAN*NPOL*isamp/INTEGRATION;
-				/*kk        = isamp/INTEGRATION + NPOL*OGULP*ichan;*/
+				// the order of operations is required
+				// otherwise time averaging operation fails
+				osamp     = isamp / INTEGRATION;
+				kk        = ichan + NCHAN*NPOL*osamp;
 				// extract same time frequency pixels
 				// do offbyone to ignore the DC term
 				p1real    = fdata [ 1 + ii ][0];
@@ -210,17 +218,20 @@ int main() {
 		printf( " detection .. " );
 
 		// write to file
-		/*fwrite ( outfb, sizeof(float), OGULP * NCHAN * NPOL, toutfile );*/
+		/*fwrite ( outfb, sizeof(float), NGULP * NCHAN * NPOL / INTEGRATION, toutfile );*/
 		/*goto exit;*/
 
 		/*
-		 * for the case when NGULP > NSBLK
+		 * for the case when OGULP > NSBLK
 		 * possibly bug here
 		 * when OGULP does not nicely divide 
 		 * outfb gets zeroed out and that data is lost
+		 * it isn't a bug when OGULP is an integer
+		 * multiple of NSBLK
 		 */
+		printf ("  writing subints=");
 		for (unsigned int i = 0; i < OGULP; i+=NSBLK) {
-			printf ("    writing subint i=%d\n", i);
+			printf ("%d ", i);
 			gmrtfits_subint_real ( &gf, outfb, i, OGULP );
 		}
 
@@ -233,7 +244,7 @@ int main() {
 		/*goto exit;*/
 	}
 
-exit:
+/*exit:*/
 	gmrtfits_close ( &gf );
 
 	// destroy plans
