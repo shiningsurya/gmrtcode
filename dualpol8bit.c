@@ -6,6 +6,10 @@
 #include <time.h>
 #include "gmrtfits.h"
 
+#ifdef TIMING
+#include <time.h>
+#endif
+
 #define NPOL 4
 #define NCHAN 2048
 #define NSBLK 2048
@@ -34,6 +38,11 @@ void print_help() {
 	fprintf(stderr, "    Time averaging is fixed at 16. Change in source and recompile if needed to change\n");
 	fprintf(stderr, "    Bitdepth is 8. Changing it requires additional logic to pack/unpack data.\n");
 }
+
+#ifdef TIMING
+clock_t tstart, tstop;
+double time_read, time_ffts, time_det, time_write;
+#endif
 
 int main() {
 	print_help ();
@@ -98,8 +107,8 @@ int main() {
 		fprintf(stderr, " Unexpected case.");
 	}
 
-	/*nreads  = infilesize1 / VREAD;*/
-	nreads  = 32;
+	nreads  = infilesize1 / VREAD;
+	/*nreads  = 32;*/
 
 	int ng = VREAD;
 	// forward FFT
@@ -122,6 +131,11 @@ int main() {
 
 	for (iread = 0; iread < nreads; iread++) {
 		printf( " iread=%d .. ", iread );
+
+#ifdef TIMING
+		tstart  = clock ();
+#endif
+
 		// read
 		read_bytes = fread ( pol1_volt_read, sizeof(char), VREAD, pol1_infile );
 		read_bytes = fread ( pol2_volt_read, sizeof(char), VREAD, pol2_infile );
@@ -132,7 +146,16 @@ int main() {
 			volt_double[VREAD + i] = (double) pol2_volt_read[i];
 		}
 
+#ifdef TIMING
+		tstop     = clock ();
+		time_read = (tstop - tstart) / CLOCKS_PER_SEC;
+#endif
+
 		printf( " read .. " );
+
+#ifdef TIMING
+		tstart  = clock ();
+#endif
 
 		// forward FFT
 		fftw_execute ( pforward );
@@ -144,6 +167,11 @@ int main() {
 		fftw_execute ( pbackward2 );
 
 		printf( " backward FFT .. " );
+
+#ifdef TIMING
+		tstop     = clock ();
+		time_ffts = (tstop - tstart) / CLOCKS_PER_SEC;
+#endif
 
 		// detection
 		/**
@@ -172,6 +200,9 @@ int main() {
 		 * (4) now testing with (ngulp, npol, nchan)
 		 **/
 
+#ifdef TIMING
+		tstart  = clock ();
+#endif
 		// do direct read
 		// zeroout the outfb
 		memset ( outfb, 0, NPOL * OGULP * NCHAN * sizeof(float) );
@@ -214,6 +245,11 @@ int main() {
 				outfb [ kk + 3*NCHAN ]  += ci;
 			} // samp
 		} // channel
+			//
+#ifdef TIMING
+		tstop    = clock ();
+		time_det = (tstop - tstart) / CLOCKS_PER_SEC;
+#endif
 
 		printf( " detection .. " );
 
@@ -229,13 +265,26 @@ int main() {
 		 * it isn't a bug when OGULP is an integer
 		 * multiple of NSBLK
 		 */
+#ifdef TIMING
+		tstart  = clock ();
+#endif
 		printf ("  writing subints=");
 		for (unsigned int i = 0; i < OGULP; i+=NSBLK) {
 			printf ("%d ", i);
 			gmrtfits_subint_real ( &gf, outfb, i, OGULP );
 		}
 
+#ifdef TIMING
+		tstop      = clock ();
+		time_write = (tstop - tstart) / CLOCKS_PER_SEC;
+#endif
+
 		printf( " written \n" );
+
+#ifdef TIMING
+		printf ("[Timing] read=%.2f ffts=%.2f det=%.2f write=%.2f\n",time_read, time_ffts, time_det, time_write);
+#endif
+
 		//
 		/*fwrite ( gf.data, sizeof(char), OGULP * NCHAN * NPOL, tou1 );*/
 		/*fwrite ( gf.scales, sizeof(float), NCHAN * NPOL, tou2 );*/

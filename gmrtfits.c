@@ -201,6 +201,9 @@ void gmrtfits_subint_open ( gmrtfits_t *fits ) {
 
 	fits_update_key(fits->fits,TSTRING,"POL_TYPE",fits->pol_type,"Polarization type.",&fits->status);
 
+	//
+	fits_flush_file (fits->fits, &fits->status);
+
 }
 
 void gmrtfits_subint_real ( gmrtfits_t *fits, real_t *data, unsigned int start, unsigned int ngulp ) {

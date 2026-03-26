@@ -1,5 +1,5 @@
 
-CC     := gcc
+CC     := gcc -DTIMING
 CFLAGS := -g -Wall -O2 -Warray-bounds=2
 LFLAGS := -lm -lcfitsio -lfftw3
 
