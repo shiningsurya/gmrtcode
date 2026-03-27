@@ -191,13 +191,7 @@ int main() {
 		 * Coherence products come from 
 		 * same time-frequency complex pixel of the two pols
 		 *
-		 * (1) i understand now why PSRFITS searchmode has layout
-		 * (nchan, npol, nsblk)
-		 * (2) i do not. PSRFITS uses CFITSIO which is column ordered
-		 * It should be sent to CFITSIO as (nsamp, npol, nchan)
-		 * which will be stored as (nchan, npol, nsamp) in CFITSIO.
-		 * (3) no layout seems to work, now going with 
-		 * (4) now testing with (ngulp, npol, nchan)
+		 * (ngulp, npol, nchan)
 		 **/
 
 #ifdef TIMING
