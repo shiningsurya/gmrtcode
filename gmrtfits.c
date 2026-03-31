@@ -1,5 +1,9 @@
 #include "gmrtfits.h"
 
+#ifdef TIMING
+#include <time.h>
+#endif
+
 void gmrtfits_prepare ( gmrtfits_t *fits, const char *filename, double mjd, unsigned npol, unsigned nchan, float fedge, float bw, unsigned nsblk, unsigned fftint, unsigned bitdepth ) {
 	// sign(bw) determines LSB or USB
 	
@@ -227,6 +231,12 @@ void gmrtfits_subint_real ( gmrtfits_t *fits, real_t *data, unsigned int start, 
 	// min is offset and max-min is scales
 	real_t _offset, _scale;
 
+#ifdef TIMING
+	clock_t tstart, tstop;
+	double time_process, time_fitsio, time_flush;
+	tstart  = clock ();
+#endif
+
 	// data is (nsblk, npol, nchan)
 	// i am sure of this
 	for (ipol = 0; ipol < fits->npol; ipol++) {
@@ -255,6 +265,12 @@ void gmrtfits_subint_real ( gmrtfits_t *fits, real_t *data, unsigned int start, 
 			} // nsamp
 		} // freq
 	} // pol
+		
+#ifdef TIMING
+	tstop        = clock ();
+	time_process = (tstop - tstart) / CLOCKS_PER_SEC;
+	tstart       = clock ();
+#endif
 	
 	// ISUBINT
 	colnum  = 1;
@@ -304,7 +320,20 @@ void gmrtfits_subint_real ( gmrtfits_t *fits, real_t *data, unsigned int start, 
 		/*exit (1);*/
 	}
 
+#ifdef TIMING
+	tstop        = clock ();
+	time_fitsio  = (tstop - tstart) / CLOCKS_PER_SEC;
+	tstart       = clock ();
+#endif
+
 	fits_flush_buffer( fits->fits, 0, &fits->status );
 	fits->nrow++;
+
+#ifdef TIMING
+	tstop        = clock ();
+	time_flush   = (tstop - tstart) / CLOCKS_PER_SEC;
+
+	printf ("[TIMING] process=%.2f fitsio=%.2f flush=%.2f\n", time_process, time_fitsio, time_flush);
+#endif
 }
 
