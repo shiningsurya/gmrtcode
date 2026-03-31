@@ -1,0 +1,13 @@
+#!/bin/bash
+
+PP="/home/jroy/psrsoft/usr"
+CU="/usr/local/cuda/"
+
+#nvcc -o dualpol8bitgpu -I$PP/include -I$CU/include -L$CU/lib64 -L$PP/lib dualpol8bitgpu.cu gmrtfits.c -lcfitsio -lfftw3 -lm -lcufft
+
+rm -f /tmp/sbethapudi_temp/testfs.fits
+
+nvcc -DTIMING -I$PP/include -I$CU/include -c dualpol8bitgpu.cu  -o dualpol8bitgpu.o
+nvcc -O3 -I$PP/include -I$CU/include -c gmrtfits.c -o gmrtfits.o
+
+nvcc -o dualpol8bitgpu -L$CU/lib64 -L$PP/lib gmrtfits.o dualpol8bitgpu.o -lcfitsio -lm -lcufft

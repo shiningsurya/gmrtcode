@@ -151,7 +151,8 @@ void gmrtfits_subint_open ( gmrtfits_t *fits ) {
 	char *tunits[] = {"", "s", "s", "", "MHz", "", "", "", ""};
 	/*char tforms[9][16];*/
 	char *tforms[9];
-	for (int i = 0; i < 9; i++) tforms[i] = malloc ( sizeof(char) * 16 );
+	int i;
+	for (i = 0; i < 9; i++) tforms[i] = malloc ( sizeof(char) * 16 );
 	long naxes [3];
 
 	int ival;
@@ -169,7 +170,7 @@ void gmrtfits_subint_open ( gmrtfits_t *fits ) {
 
 	fits_create_tbl( fits->fits, BINARY_TBL, 0, 9, ttypes, tforms, tunits, "SUBINT", &fits->status);
 	// free them
-	for (int i = 0; i < 9; i++) free ( tforms[i] );
+	for (i = 0; i < 9; i++) free ( tforms[i] );
 
 	// astropy.io.fits needs me to save in reverse order
 	naxes[0] = fits->nsblk;

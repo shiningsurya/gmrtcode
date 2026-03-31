@@ -3,10 +3,13 @@
 #include <stddef.h>
 #include <math.h>
 #include <time.h>
-#include "gmrtfits.h"
 
 // gpu
 #include <cufft.h>
+
+extern "C" {
+	#include "gmrtfits.h"
+}
 
 #ifdef TIMING
 #include <time.h>
@@ -15,15 +18,21 @@
 #define NPOL 4
 #define NCHAN 2048
 #define NSBLK 2048
-#define NGULP 524288
+//const unsigned long NGULP =524288;
+// 525288 yields VREAD max of int32
+//const unsigned long NGULP =262144;
+// only 65536 works
+const unsigned long NGULP =65536;
 // time integration
 #define INTEGRATION 8
 #define OGULP ( NGULP / INTEGRATION )
 // ensure OGULP is integer multiple of NSBLK
 // channelizer sizes
 // These are per-pol
-#define VREAD ( 2 * NCHAN * NGULP )
-#define FFTCOMPLEXSIZE (1 + NCHAN*NGULP)
+//#define VREAD ( 2 * NCHAN * NGULP )
+//#define FFTCOMPLEXSIZE (1 + NCHAN*NGULP)
+unsigned long VREAD = 2 * NCHAN * NGULP;
+unsigned long FFTCOMPLEXSIZE = 1 + NCHAN*NGULP;
 
 void print_help() {
 	fprintf(stderr, "\n");
@@ -39,10 +48,10 @@ void print_help() {
 	fprintf(stderr, " Notes:\n");
 	fprintf(stderr, "    Time averaging is fixed at 16. Change in source and recompile if needed to change\n");
 	fprintf(stderr, "    Bitdepth is 8. Changing it requires additional logic to pack/unpack data.\n");
+	fprintf(stderr, "\n");
 }
 
-__global__ 
-void detect_integrate ( cufftComplex *in, cufftReal *out ) {
+__global__ void detect_integrate ( cufftComplex *in, cufftReal *out ) {
 	/*
 	 * in  is 2 x ( 1 + FFTCOMPLEXSIZE )
 	 * out is NCHAN x OGULP x NPOL
@@ -63,25 +72,28 @@ void detect_integrate ( cufftComplex *in, cufftReal *out ) {
 	
 	unsigned long int ii = 0, kk = 0;
 
-	ii    = NTAVG*osamp + NTAVG*OGULP*ichan;
+	ii    = INTEGRATION*osamp + INTEGRATION*OGULP*ochan;
 	kk    = ochan + NCHAN*NPOL*osamp;
+
+	// FFTCOMPLEXSIZE defined in host
+	unsigned long FSIZE = 1 + NCHAN*NGULP;
 
 	__syncthreads();
 
 	// definitions
 	int    i = 0;
 	float aa = 0.0, bb = 0.0, cr = 0.0, ci = 0.0;
-	for ( i = 0; i < NTAVG; i++ ) {
+	for ( i = 0; i < INTEGRATION; i++ ) {
 
 		// load 2xNTAVG samples from pols
 		// the pointer offset needed
 		cufftComplex p1 = in [ 1 + ii + i ];
-		cufftComplex p2 = in [ 1 + FFTCOMPLEXSIZE + ii + i ];
+		cufftComplex p2 = in [ 1 + FSIZE + ii + i ];
 
-		aa += p1[0]*p1[0] + p1[1]*p1[1];
-		bb += p2[0]*p2[0] + p2[1]*p2[1];
-		cr += p1[0]*p2[0] + p1[1]*p2[1];
-		ci += p1[1]*p2[0] - p1[0]*p2[1];
+		aa += p1.x*p1.x + p1.y*p1.y;
+		bb += p2.x*p2.x + p2.y*p2.y;
+		cr += p1.x*p2.x + p1.y*p2.y;
+		ci += p1.y*p2.x - p1.x*p2.y;
 	}
 
 	__syncthreads();
@@ -101,11 +113,12 @@ double time_h2d, time_d2h;
 
 int main() {
 	print_help ();
-	const char *pol1_infile_path = "/home/shining/C02pol1200MHz8bitsCRAB550MHz_10s.raw";
-	const char *pol2_infile_path = "/home/shining/C02pol1200MHz8bitsCRAB550MHz_10s.raw";
+	const char *pol1_infile_path = "/tmp/sbethapudi_temp/pol1.raw";
+	const char *pol2_infile_path = "/tmp/sbethapudi_temp/pol2.raw";
 	/*const char *toufile_path = "/tmp/baseband/testfb_float.raw";*/
-	const char *oufile_path = "/tmp/baseband/testfs.fits";
-	double mjd            = 60900.23741898148;
+	const char *oufile_path = "/tmp/sbethapudi_temp/testfs.fits";
+	// 2026-03-23-16-47-05
+	double mjd            = 61122.47019675926;
 
 	// file pointers
 	/*FILE *infile, *outfile;*/
@@ -134,6 +147,7 @@ int main() {
 	//-------------------------//
 
 	// FFTW
+	//cudaSetDevice ( 1 );
 	cufftResult cures;
 	cudaError_t cuerr;
 	/*cufftHandle pforward, pbackward1, pbackward2;*/
@@ -149,10 +163,10 @@ int main() {
 	// mallocs
 	pol1_volt_read  = (char*) malloc ( VREAD * sizeof (char) );
 	pol2_volt_read  = (char*) malloc ( VREAD * sizeof (char) );
-	cudaHostMalloc ( &volt_float, 2 * VREAD * sizeof(float) );
+	cudaHostAlloc ( &volt_float, 2 * VREAD * sizeof(float), cudaHostAllocDefault );
 	cudaMalloc ( &volt_d, 2 * VREAD * sizeof(float) );
 	cudaMalloc ( &fdata_d, 2 * FFTCOMPLEXSIZE * sizeof(cufftComplex) );
-	cudaHostMalloc ( &outfb, NPOL * NCHAN * OGULP * sizeof(float) );
+	cudaHostAlloc ( &outfb, NPOL * NCHAN * OGULP * sizeof(float), cudaHostAllocDefault );
 	cudaMalloc ( &outfb_d, NPOL * OGULP * NCHAN * sizeof(float) );
 
 	// files open
@@ -177,13 +191,17 @@ int main() {
 		fprintf(stderr, " Unexpected case.");
 	}
 
-	/*nreads  = infilesize1 / VREAD;*/
-	nreads  = 2;
-
+	nreads  = infilesize1 / VREAD;
+	//nreads  = 2; 
 	int ng = VREAD;
 	// forward FFT
 	/*pforward = fftw_plan_many_dft_r2c ( 1, &ng, 2, volt_double, NULL, 1, VREAD, fdata, NULL, 1, FFTCOMPLEXSIZE, FFTW_ESTIMATE  );*/
-	cures = cufftPlanMany ( &pforward, &ng, NULL, 1, VREAD, NULL, 1, FFTCOMPLEXSIZE, CUFFT_R2C, 2);
+	cures = cufftPlanMany ( &pforward, 1, &ng, NULL, 1, VREAD, NULL, 1, FFTCOMPLEXSIZE, CUFFT_R2C, 2);
+	//cures = cufftPlan1d ( &pforward, ng, CUFFT_R2C, 2 );
+	if ( cures != CUFFT_SUCCESS ) {
+			printf (" [!!] Forward FFT plan failed code=%d\n", cures);
+			goto exit;
+	}
 
 
 	// per pol :: real VREAD -> complex NCHAN*NGULP + 1
@@ -201,6 +219,10 @@ int main() {
 	/*pbackward2 = fftw_plan_many_dft ( 1, &ng, NCHAN, fdata+FFTCOMPLEXSIZE+1, NULL, 1, NGULP, fdata+FFTCOMPLEXSIZE+1, NULL, 1, NGULP, FFTW_BACKWARD, FFTW_ESTIMATE );*/
 	ng    = NGULP;
 	cures = cufftPlanMany (&pbackward, 1, &ng, NULL, 1, NGULP, NULL, 1, NGULP, CUFFT_C2C, NCHAN);
+	if ( cures != CUFFT_SUCCESS ) {
+			printf (" [!!] Backward FFT plan failed code=%d\n", cures);
+			goto exit;
+	}
 
 	printf (" prepared plans .. starting ... total nreads=%d\n", nreads);
 	gmrtfits_subint_open ( &gf );
@@ -233,7 +255,7 @@ int main() {
 		tstart  = clock ();
 #endif
 
-		cures   = cudaMemcpy ( volt_d, volt_float, 2 * VREAD * sizeof(float), cudaMemcpyHostToDevice );
+		cuerr   = cudaMemcpy ( volt_d, volt_float, 2 * VREAD * sizeof(float), cudaMemcpyHostToDevice );
 
 #ifdef TIMING
 		tstop     = clock ();
@@ -248,7 +270,7 @@ int main() {
 		/*fftw_execute ( pforward );*/
 		cures   = cufftExecR2C ( pforward, volt_d, fdata_d );
 		if ( cures != CUFFT_SUCCESS ) {
-			printf (" [!!] Forward FFT failed\n");
+			printf (" [!!] Forward FFT failed code=%d\n", cures);
 		}
 
 		printf( " forward FFT .. " );
@@ -295,7 +317,7 @@ int main() {
 #ifdef TIMING
 		tstart  = clock ();
 #endif
-		detect_and_integrate <<<digrid,diblock>>> ( volt_d, outfb_d );
+		detect_integrate <<<digrid,diblock>>> ( fdata_d, outfb_d );
 #ifdef TIMING
 		tstop    = clock ();
 		time_det = (tstop - tstart) / CLOCKS_PER_SEC;
@@ -307,7 +329,7 @@ int main() {
 		tstart  = clock ();
 #endif
 
-		cures   = cudaMemcpy ( outfb, outfb_d, OGULP * NCHAN * NPOL * sizeof(float), cudaMemcpyDeviceToHost );
+		cuerr   = cudaMemcpy ( outfb, outfb_d, OGULP * NCHAN * NPOL * sizeof(float), cudaMemcpyDeviceToHost );
 
 #ifdef TIMING
 		tstop     = clock ();
@@ -330,9 +352,9 @@ int main() {
 #ifdef TIMING
 		tstart  = clock ();
 #endif
-		printf ("  writing subints=");
+		printf ("  writing subints");
 		for (i = 0; i < OGULP; i+=NSBLK) {
-			printf ("%d ", i);
+			//printf ("%d ", i);
 			gmrtfits_subint_real ( &gf, outfb, i, OGULP );
 		}
 
@@ -342,7 +364,7 @@ int main() {
 #endif
 
 #ifdef TIMING
-		printf ("[Timing] read=%.2f ffts=%.2f det=%.2f write=%.2f\n",time_read, time_ffts, time_det, time_write);
+		printf ("\n[Timing] read=%.2f ffts=%.2f det=%.2f write=%.2f copies=%.2f\n",time_read, time_ffts, time_det, time_write, time_h2d + time_d2h);
 #endif
 
 		//
@@ -353,7 +375,7 @@ int main() {
 		/*goto exit;*/
 	}
 
-/*exit:*/
+exit:
 	gmrtfits_close ( &gf );
 
 	// release memory
