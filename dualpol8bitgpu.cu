@@ -352,7 +352,7 @@ int main() {
 #ifdef TIMING
 		tstart  = clock ();
 #endif
-		printf ("  writing subints");
+		printf ("  writing subints\n");
 		for (i = 0; i < OGULP; i+=NSBLK) {
 			//printf ("%d ", i);
 			gmrtfits_subint_real ( &gf, outfb, i, OGULP );
@@ -364,7 +364,7 @@ int main() {
 #endif
 
 #ifdef TIMING
-		printf ("\n[Timing] read=%.2f ffts=%.2f det=%.2f write=%.2f copies=%.2f\n",time_read, time_ffts, time_det, time_write, time_h2d + time_d2h);
+		printf ("[Timing] read=%.2f ffts=%.2f det=%.2f write=%.2f copies=%.2f\n",time_read, time_ffts, time_det, time_write, time_h2d + time_d2h);
 #endif
 
 		//

@@ -333,7 +333,7 @@ void gmrtfits_subint_real ( gmrtfits_t *fits, real_t *data, unsigned int start, 
 	tstop        = clock ();
 	time_flush   = (tstop - tstart) / CLOCKS_PER_SEC;
 
-	printf ("[TIMING] process=%.2f fitsio=%.2f flush=%.2f\n", time_process, time_fitsio, time_flush);
+	printf ("[TIMING] process=%.5f fitsio=%.5f flush=%.5f\n", time_process, time_fitsio, time_flush);
 #endif
 }
 
