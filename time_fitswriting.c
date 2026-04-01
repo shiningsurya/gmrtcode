@@ -43,10 +43,7 @@ int main () {
 
 	while ( ntimes-- ) {
 		printf ("  writing subints\n");
-		for (int i = 0; i < OGULP; i+=NSBLK) {
-			//printf ("%d ", i);
-			gmrtfits_subint_real ( &gf, fb, i, OGULP );
-		}
+		gmrtfits_subint_add ( &gf, fb, OGULP );
 	}
 	///
 	free ( fb );

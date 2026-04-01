@@ -39,15 +39,17 @@ void print_help() {
 	fprintf(stderr, "  dualpol8bit - Transforms 8bit GMRT GWB baseband data into search mode PSRFITS\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, "    -h Print this help\n");
-	fprintf(stderr, "    -r <rraw> Right Circular Polarized baseband file\n");
-	fprintf(stderr, "    -l <lraw> Left Circular Polarized baseband file\n");
+	fprintf(stderr, "    -r <raw> Right Circular Polarized baseband file\n");
+	fprintf(stderr, "    -l <raw> Left Circular Polarized baseband file\n");
 	fprintf(stderr, "    -f <freq> Frequency edge of recording in MHz\n");
 	fprintf(stderr, "    -b <fbw> Signed bandwidth in MHz where sign determines USB(positive) or LSB(negative)\n");
 	fprintf(stderr, "    -t <mjd> MJD in maximum available precision\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, " Notes:\n");
-	fprintf(stderr, "    Time averaging is fixed at 16. Change in source and recompile if needed to change\n");
-	fprintf(stderr, "    Bitdepth is 8. Changing it requires additional logic to pack/unpack data.\n");
+	fprintf(stderr, " *  Time averaging is fixed at 8. Change INTEGRATION definition and recompile if needed.\n");
+	fprintf(stderr, " *  Bitdepth is 8. Changing it requires additional logic to pack/unpack data.\n");
+	fprintf(stderr, " *  First polarization is RCP (-r) and second is LCP (-l)\n");
+	fprintf(stderr, "    This causes V defined as RR - LL.\n");
 	fprintf(stderr, "\n");
 }
 
@@ -112,13 +114,69 @@ double time_h2d, time_d2h;
 #endif
 
 int main() {
-	print_help ();
-	const char *pol1_infile_path = "/tmp/sbethapudi_temp/pol1.raw";
-	const char *pol2_infile_path = "/tmp/sbethapudi_temp/pol2.raw";
-	/*const char *toufile_path = "/tmp/baseband/testfb_float.raw";*/
-	const char *oufile_path = "/tmp/sbethapudi_temp/testfs.fits";
+	// arguments
+	int opt;
+	double mjd = -1.0;
+	float fedge = -1.0, bw = 0.0;
+
+	char *rawr;
+	char *rawl;
+	char *outfile;
+	char *pol1_infile_path = NULL;
+	char *pol2_infile_path = NULL;
+	char *oufile_path = NULL;
+
+	while ( (opt = getopt ( argc, argv, "hr:l:f:b:t:o:" )) != -1 ) {
+		switch (opt) {
+			case 'h':
+				print_help ();
+				exit (EXIT_SUCCESS);
+				break;
+			case 't':
+				mjd    = atof ( optarg );
+				break;
+			case 'f':
+				fedge  = atof ( optarg );
+				break;
+			case 'b':
+				bw     = atof ( optarg );
+				break;
+			case 'l':
+				pol2_infile_path = strdup ( optarg );
+				break;
+			case 'r':
+				pol1_infile_path = strdup ( optarg );
+				break;
+			case 'o':
+				oufile_path      = strdup ( optarg );
+				break;
+		} // switch
+	} // arg loop
+
 	// 2026-03-23-16-47-05
-	double mjd            = 61122.47019675926;
+	//double mjd            = 61122.47019675926;
+	
+	// sanitizing arguments
+	if ( mjd < 0.0 ) {
+		fprintf(stderr, "MJD not set .. exiting .. ");
+		exit (EXIT_SUCCESS);
+	}
+	if ( fedge < 0.0 ) {
+		fprintf(stderr, "fedge not set .. exiting .. ");
+		exit (EXIT_SUCCESS);
+	}
+	if ( bw == 0.0 ) {
+		fprintf(stderr, "bw not set .. exiting .. ");
+		exit (EXIT_SUCCESS);
+	}
+	if ( pol1_infile_path == NULL || pol2_infile_path == NULL ) {
+		fprintf(stderr, "raw input files missing .. exiting .. ");
+		exit (EXIT_SUCCESS);
+	}
+	if ( oufile_path == NULL ) {
+		fprintf(stderr, "output file missing .. exiting .. ");
+		exit (EXIT_SUCCESS);
+	}
 
 	// file pointers
 	/*FILE *infile, *outfile;*/
@@ -140,9 +198,36 @@ int main() {
 	float *outfb;
 	char *pol1_volt_read, *pol2_volt_read;
 
+	// files open
+	pol1_infile  = fopen ( pol1_infile_path, "r" );
+	pol2_infile  = fopen ( pol2_infile_path, "r" );
+
+	/*tou1         = fopen ( "/tmp/baseband/testfb_data.raw" , "w" );*/
+	/*tou2         = fopen ( "/tmp/baseband/testfb_scales.raw" , "w" );*/
+	/*tou3         = fopen ( "/tmp/baseband/testfb_offsets.raw" , "w" );*/
+	/*toutfile = fopen ( "/tmp/baseband/toutf32.raw", "w+" );*/
+
+	// get file size
+	fseek ( pol1_infile, 0L, SEEK_END );
+	infilesize1 = ftell ( pol1_infile );
+	fseek ( pol1_infile, 0L, SEEK_SET );
+	fseek ( pol2_infile, 0L, SEEK_END );
+	infilesize2 = ftell ( pol2_infile );
+	fseek ( pol2_infile, 0L, SEEK_SET );
+	//
+	if ( infilesize1 != infilesize2 ) {
+		fprintf(stderr, " filesizes pol1=%lu pol2=%lu\n", infilesize1, infilesize2);
+		fprintf(stderr, " Unexpected case.");
+		exit (EXIT_SUCCESS);
+	}
+
+	nreads  = infilesize1 / VREAD;
+	//-------------------------//
+
+
 	//-------------------------//
 	gmrtfits_t gf;
-	gmrtfits_prepare ( &gf, oufile_path, mjd, NPOL, NCHAN, 550.0f, 200.0f, NSBLK, INTEGRATION, 8 );
+	gmrtfits_prepare ( &gf, oufile_path, mjd, NPOL, NCHAN, fedge, bw, NSBLK, INTEGRATION, 8 );
 	gmrtfits_create ( &gf );
 	//-------------------------//
 
@@ -169,29 +254,7 @@ int main() {
 	cudaHostAlloc ( &outfb, NPOL * NCHAN * OGULP * sizeof(float), cudaHostAllocDefault );
 	cudaMalloc ( &outfb_d, NPOL * OGULP * NCHAN * sizeof(float) );
 
-	// files open
-	pol1_infile  = fopen ( pol1_infile_path, "r" );
-	pol2_infile  = fopen ( pol2_infile_path, "r" );
 
-	/*tou1         = fopen ( "/tmp/baseband/testfb_data.raw" , "w" );*/
-	/*tou2         = fopen ( "/tmp/baseband/testfb_scales.raw" , "w" );*/
-	/*tou3         = fopen ( "/tmp/baseband/testfb_offsets.raw" , "w" );*/
-	/*toutfile = fopen ( "/tmp/baseband/toutf32.raw", "w+" );*/
-
-	// get file size
-	fseek ( pol1_infile, 0L, SEEK_END );
-	infilesize1 = ftell ( pol1_infile );
-	fseek ( pol1_infile, 0L, SEEK_SET );
-	fseek ( pol2_infile, 0L, SEEK_END );
-	infilesize2 = ftell ( pol2_infile );
-	fseek ( pol2_infile, 0L, SEEK_SET );
-	//
-	if ( infilesize1 != infilesize2 ) {
-		fprintf(stderr, " filesizes pol1=%lu pol2=%lu\n", infilesize1, infilesize2);
-		fprintf(stderr, " Unexpected case.");
-	}
-
-	nreads  = infilesize1 / VREAD;
 	//nreads  = 2; 
 	int ng = VREAD;
 	// forward FFT
@@ -405,6 +468,9 @@ exit:
 	/*fclose ( tou2 );*/
 	/*fclose ( tou3 );*/
 	/*fclose ( toutfile );*/
+	free ( pol1_infile_path );
+	free ( pol2_infile_path );
+	free ( oufile_path );
 
 	return 0;
 }

@@ -337,3 +337,141 @@ void gmrtfits_subint_real ( gmrtfits_t *fits, real_t *data, unsigned int start, 
 #endif
 }
 
+void gmrtfits_subint_add ( gmrtfits_t *fits, real_t *data, unsigned int ngulp ) {
+	// the data layout is confusing since CFITSIO behaves like FORTRAN with column major ordering
+	// ngulp = k * nsblk for some k
+	// will write multiple times in the same function call
+	// need to write (start:(start+nsblk), npol, nchan)
+	//
+	
+	int colnum  = 0;
+	int    ival = 0;
+	double dval = 0.0;
+
+	// normalize data
+	// scales and offsets are (nchan, npol)
+	// DATA = DAT_WTS * ( BATA*SCALES + OFFSETS )
+	
+	// iterators
+	unsigned isamp, osamp, ichan, ipol;
+	/*unsigned stop  = start + fits->nsblk;*/
+	unsigned int start, stop;
+
+	// compute min and max (nchan, npol)
+	// min is offset and max-min is scales
+	real_t _offset, _scale;
+
+#ifdef TIMING
+	clock_t tstart, tstop;
+	unsigned rowwrites  = 0;
+	double time_process = 0., time_fitsio = 0., time_flush = 0.;
+#endif
+
+	for (start = 0; start < ngulp; start+=fits->nsblk) {
+		stop    = start + fits->nsblk;
+#ifdef TIMING
+		tstart  = clock ();
+#endif
+		// data is (nsblk, npol, nchan)
+		for (ipol = 0; ipol < fits->npol; ipol++) {
+			for (ichan = 0; ichan < fits->nchan; ichan++) {
+
+				real_t _min = FLT_MAX, _max = -FLT_MAX;
+
+				// find min and max per (nchan,npol)
+				for (isamp  = start; isamp < stop; isamp++) {
+					real_t _d = data [ ichan + fits->nchan*ipol + fits->nchan_npol*isamp ];
+
+					if ( _d < _min ) _min = _d;
+					if ( _d > _max ) _max = _d;
+				} // nsamp
+					
+				_offset    = _min;
+				_scale     = (_max - _min) / 255.0;
+
+				fits->offsets [ ichan + fits->nchan*ipol ] = _offset;
+				fits->scales  [ ichan + fits->nchan*ipol ] = _scale;
+
+				for (isamp = start,osamp = 0; isamp < stop; isamp++, osamp++) {
+					real_t _d = data [ ichan + fits->nchan*ipol + fits->nchan_npol*isamp ];
+					fits->data [ ichan + fits->nchan*ipol + fits->nchan_npol*osamp ] = (char) ( ( _d - _offset ) / _scale );
+					/*fits->data [ ichan + fits->nchan*ipol + fits->nchan_npol*osamp ] = (char) ( ipol + (64*ichan/2048));*/
+				} // nsamp
+			} // freq
+		} // pol
+#ifdef TIMING
+		tstop        = clock ();
+		time_process += (tstop - tstart) / CLOCKS_PER_SEC;
+		tstart       = clock ();
+#endif
+
+		// ISUBINT
+		colnum  = 1;
+		fits_write_col( fits->fits, TINT, colnum, fits->nrow, 1, 1, &fits->nrow, &fits->status );
+
+		// TSUBINT
+		colnum  = 2;
+		dval    = fits->nsblk * fits->tsamp;
+		fits_write_col( fits->fits, TDOUBLE, colnum, fits->nrow, 1, 1, &dval, &fits->status );
+		
+		// OFFS_SUB
+		colnum  = 3;
+		dval    =  (fits->nrow + 0.5) * fits->nsblk * fits->tsamp;
+		fits_write_col( fits->fits, TDOUBLE, colnum, fits->nrow, 1, 1, &dval, &fits->status );
+		// middle of the subint
+		
+		// NPOL
+		colnum  = 4;
+		ival    = fits->npol;
+		fits_write_col( fits->fits, TINT, colnum, fits->nrow, 1, 1, &ival, &fits->status );
+
+		// DAT_FREQ
+		colnum  = 5;
+		fits_write_col( fits->fits, TFLOAT, colnum, fits->nrow, 1, fits->nchan, fits->center_freqs, &fits->status );
+
+		// DAT_WTS
+		colnum  = 6;
+		fits_write_col( fits->fits, TFLOAT, colnum, fits->nrow, 1, fits->nchan_npol, fits->weights, &fits->status );
+
+		// DAT_OFFS
+		colnum  = 7;
+		fits_write_col( fits->fits, TFLOAT, colnum, fits->nrow, 1, fits->nchan_npol, fits->offsets, &fits->status );
+
+		// DAT_SCL
+		colnum  = 8;
+		fits_write_col( fits->fits, TFLOAT, colnum, fits->nrow, 1, fits->nchan_npol, fits->scales, &fits->status );
+
+		// DATA
+		colnum  = 9;
+		fits_write_col( fits->fits, TBYTE, colnum, fits->nrow, 1, fits->nsblk_nchan_npol, fits->data, &fits->status );
+
+
+		if ( fits->status ) {
+			printf ("\n at gmrtfits_subint_real_single row=%ld ...\n", fits->nrow);
+			fits_report_error(stderr, fits->status);
+			raise(SIGINT);
+			/*exit (1);*/
+		}
+
+#ifdef TIMING
+		tstop        = clock ();
+		time_fitsio  += (tstop - tstart) / CLOCKS_PER_SEC;
+		tstart       = clock ();
+#endif
+
+		fits_flush_buffer( fits->fits, 0, &fits->status );
+		fits->nrow++;
+
+#ifdef TIMING
+		tstop        = clock ();
+		time_flush   += (tstop - tstart) / CLOCKS_PER_SEC;
+		rowwrites++;
+#endif
+	} // nsblk write loop
+		
+#ifdef TIMING
+	printf ("[TIMING] written rows=%d process=%.5f fitsio=%.5f flush=%.5f\n", rowwrites, time_process, time_fitsio, time_flush);
+#endif
+
+} // function
+

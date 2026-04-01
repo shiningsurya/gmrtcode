@@ -68,6 +68,11 @@ void gmrtfits_subint_real ( gmrtfits_t *fits, real_t *data, unsigned int start, 
 /*void add_subint_8bit ( gmrtfits_t *fits, u8_t *data );*/
 // it would skip the normalize_data step
 
+// same as above
+// but writes all the data in one go
+// avoiding a loop somewhere out
+void gmrtfits_subint_add ( gmrtfits_t *fits, real_t *data, unsigned int ngulp );
+
 // private methods
 
 /*void normalize_data ( gmrtfits_t *fits, u16_t *data );*/
