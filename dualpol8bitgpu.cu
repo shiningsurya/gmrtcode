@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
+#include <unistd.h>
 #include <math.h>
 #include <time.h>
 
@@ -39,6 +40,7 @@ void print_help() {
 	fprintf(stderr, "  dualpol8bit - Transforms 8bit GMRT GWB baseband data into search mode PSRFITS\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, "    -h Print this help\n");
+	fprintf(stderr, "    -o <sf> output PSRFITS file\n");
 	fprintf(stderr, "    -r <raw> Right Circular Polarized baseband file\n");
 	fprintf(stderr, "    -l <raw> Left Circular Polarized baseband file\n");
 	fprintf(stderr, "    -f <freq> Frequency edge of recording in MHz\n");
@@ -46,8 +48,10 @@ void print_help() {
 	fprintf(stderr, "    -t <mjd> MJD in maximum available precision\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, " Notes:\n");
-	fprintf(stderr, " *  Time averaging is fixed at 8. Change INTEGRATION definition and recompile if needed.\n");
-	fprintf(stderr, " *  Bitdepth is 8. Changing it requires additional logic to pack/unpack data.\n");
+	fprintf(stderr, " *  Time averaging is fixed at 8.\n");
+	fprintf(stderr, "    Change INTEGRATION definition and recompile if needed.\n");
+	fprintf(stderr, " *  Bitdepth is 8.\n");
+	fprintf(stderr, " *  Changing it requires additional logic to pack/unpack data.\n");
 	fprintf(stderr, " *  First polarization is RCP (-r) and second is LCP (-l)\n");
 	fprintf(stderr, "    This causes V defined as RR - LL.\n");
 	fprintf(stderr, "\n");
@@ -113,7 +117,7 @@ double time_read, time_ffts, time_det, time_write;
 double time_h2d, time_d2h;
 #endif
 
-int main() {
+int main( int argc, char *argv[]) {
 	// arguments
 	int opt;
 	double mjd = -1.0;
@@ -177,6 +181,12 @@ int main() {
 		fprintf(stderr, "output file missing .. exiting .. ");
 		exit (EXIT_SUCCESS);
 	}
+
+	// argparsing done
+#if 1
+	printf("[inputs] mjd=%f fedge=%f bw=%f\n", mjd, fedge, bw);
+	printf("[inputs] in_pol1=%s in_pol2=%s out=%s\n", pol1_infile_path, pol2_infile_path, oufile_path);
+#endif
 
 	// file pointers
 	/*FILE *infile, *outfile;*/
@@ -415,11 +425,8 @@ int main() {
 #ifdef TIMING
 		tstart  = clock ();
 #endif
+		gmrtfits_subint_add ( &gf, outfb, OGULP );
 		printf ("  writing subints\n");
-		for (i = 0; i < OGULP; i+=NSBLK) {
-			//printf ("%d ", i);
-			gmrtfits_subint_real ( &gf, outfb, i, OGULP );
-		}
 
 #ifdef TIMING
 		tstop      = clock ();
