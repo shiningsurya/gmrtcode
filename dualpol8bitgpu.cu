@@ -3,7 +3,6 @@
 #include <stddef.h>
 #include <unistd.h>
 #include <math.h>
-#include <time.h>
 
 // gpu
 #include <cufft.h>
@@ -125,9 +124,6 @@ int main( int argc, char *argv[]) {
 	float fedge = -1.0, bw = 0.0;
 	int gpuid = 0;
 
-	char *rawr;
-	char *rawl;
-	char *outfile;
 	char *pol1_infile_path = NULL;
 	char *pol2_infile_path = NULL;
 	char *oufile_path = NULL;
