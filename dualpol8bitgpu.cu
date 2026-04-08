@@ -40,6 +40,7 @@ void print_help() {
 	fprintf(stderr, "  dualpol8bit - Transforms 8bit GMRT GWB baseband data into search mode PSRFITS\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, "    -h Print this help\n");
+	fprintf(stderr, "    -g <gpuid> GPU to choose (def=0)\n");
 	fprintf(stderr, "    -o <sf> output PSRFITS file\n");
 	fprintf(stderr, "    -r <raw> Right Circular Polarized baseband file\n");
 	fprintf(stderr, "    -l <raw> Left Circular Polarized baseband file\n");
@@ -122,6 +123,7 @@ int main( int argc, char *argv[]) {
 	int opt;
 	double mjd = -1.0;
 	float fedge = -1.0, bw = 0.0;
+	int gpuid = 0;
 
 	char *rawr;
 	char *rawl;
@@ -130,7 +132,7 @@ int main( int argc, char *argv[]) {
 	char *pol2_infile_path = NULL;
 	char *oufile_path = NULL;
 
-	while ( (opt = getopt ( argc, argv, "hr:l:f:b:t:o:" )) != -1 ) {
+	while ( (opt = getopt ( argc, argv, "hg:r:l:f:b:t:o:" )) != -1 ) {
 		switch (opt) {
 			case 'h':
 				print_help ();
@@ -138,6 +140,9 @@ int main( int argc, char *argv[]) {
 				break;
 			case 't':
 				mjd    = atof ( optarg );
+				break;
+			case 'g':
+				gpuid  = atoi ( optarg );
 				break;
 			case 'f':
 				fedge  = atof ( optarg );
@@ -242,7 +247,7 @@ int main( int argc, char *argv[]) {
 	//-------------------------//
 
 	// FFTW
-	//cudaSetDevice ( 1 );
+	cudaSetDevice ( gpuid );
 	cufftResult cures;
 	cudaError_t cuerr;
 	/*cufftHandle pforward, pbackward1, pbackward2;*/
