@@ -4,6 +4,9 @@
 #include <time.h>
 #endif
 
+#define FLUSH_TIMES 8
+// flush once per FLUSH_TIMES rows
+
 void gmrtfits_prepare ( gmrtfits_t *fits, const char *filename, double mjd, unsigned npol, unsigned nchan, float fedge, float bw, unsigned nsblk, unsigned fftint, unsigned bitdepth ) {
 	// sign(bw) determines LSB or USB
 	
@@ -323,18 +326,24 @@ void gmrtfits_subint_real ( gmrtfits_t *fits, real_t *data, unsigned int start, 
 #ifdef TIMING
 	tstop        = clock ();
 	time_fitsio  = (tstop - tstart) / CLOCKS_PER_SEC;
-	tstart       = clock ();
 #endif
 
-	fits_flush_buffer( fits->fits, 0, &fits->status );
-	fits->nrow++;
+	if ( fits->nrow % FLUSH_TIMES == 0) {
+#ifdef TIMING
+		tstart       = clock ();
+#endif
+		fits_flush_buffer( fits->fits, 0, &fits->status );
+#ifdef TIMING
+		tstop        = clock ();
+		time_flush   = (tstop - tstart) / CLOCKS_PER_SEC;
+#endif
+	}
 
 #ifdef TIMING
-	tstop        = clock ();
-	time_flush   = (tstop - tstart) / CLOCKS_PER_SEC;
-
 	printf ("[TIMING] process=%.5f fitsio=%.5f flush=%.5f\n", time_process, time_fitsio, time_flush);
 #endif
+
+	fits->nrow++;
 }
 
 void gmrtfits_subint_add ( gmrtfits_t *fits, real_t *data, unsigned int ngulp ) {
@@ -458,15 +467,16 @@ void gmrtfits_subint_add ( gmrtfits_t *fits, real_t *data, unsigned int ngulp ) 
 		time_fitsio  += (tstop - tstart) / CLOCKS_PER_SEC;
 		tstart       = clock ();
 #endif
-
-		fits_flush_buffer( fits->fits, 0, &fits->status );
-		fits->nrow++;
-
+		if ( fits->nrow % FLUSH_TIMES == 0 ) {
+			fits_flush_buffer( fits->fits, 0, &fits->status );
+		}
 #ifdef TIMING
 		tstop        = clock ();
 		time_flush   += (tstop - tstart) / CLOCKS_PER_SEC;
 		rowwrites++;
 #endif
+
+		fits->nrow++;
 	} // nsblk write loop
 		
 #ifdef TIMING
