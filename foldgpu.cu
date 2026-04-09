@@ -8,21 +8,46 @@
 #include <cstdlib>
 #include <cstddef>
 #include <cmath>
+#include <unistd.h>
+
+#include <vector>
+#include <fstream>
+#include <string>
+#include <algorithm>
+
+#ifdef TIMING
 #include <time.h>
+#endif
 
 /* gpu */
 #include <cufft.h>
 
+#define NPOL 4
+#define NCHAN 2048
+#define NBIN 4096
+#define NGULP 65536
+/*
 constexpr int NPOL                     = 4;
 constexpr int NCHAN                    = 2048;
-constexpr int NBIN                     = 4096;
+constexpr int NBIN                     = 1024;
 constexpr unsigned NGULP               = 65536;
-constexpr unsigned long VREAD          = 2 * NCHAN * NGULP;
-constexpr unsigned long FFTCOMPLEXSIZE = 1 + NCHAN*NGULP;
+*/
+unsigned long VREAD          = 2 * NCHAN * NGULP;
+unsigned long FFTCOMPLEXSIZE = 1 + NCHAN*NGULP;
 
-constexpr double TAU        = 6.283185307179586;
-constexpr double DMCONSTANT = 2.41E-10;
+/*
+double TAU        = 6.283185307179586;
+double DMCONSTANT = 2.41E-10;
+*/
 
+using std::string;
+
+#ifdef TIMING
+clock_t tstart, tstop;
+double time_read, time_ffts, time_det, time_write;
+double time_bplan;
+double time_h2d, time_d2h;
+#endif
 
 void print_help() {
 	fprintf(stderr, "\n");
@@ -37,6 +62,7 @@ void print_help() {
 	fprintf(stderr, "    -t <mjd> Start MJD in maximum available precision\n");
 	fprintf(stderr, "    -d <dm> Dispersion measure to perform coherent de-dispersion\n");
 	fprintf(stderr, "    -c <period> period to use while folding\n");
+	fprintf(stderr, "    -i <rotations> Number of rotations to form a subint\n");
 	fprintf(stderr, "    -p <polyco> polyco file\n");
 	fprintf(stderr, "\n");
 	fprintf(stderr, " Notes:\n");
@@ -65,15 +91,21 @@ __global__ void dedisperse ( cufftComplex *in, cufftComplex *out, float fedge, f
 	 */
 	
 	size_t ivolt = blockIdx.x * blockDim.x + threadIdx.x;
+	size_t fsize = 1 + NCHAN*NGULP;
 
-	int ichan    = (ivolt > FFTCOMPLEXSIZE) ? (ivolt - FFTCOMPLEXSIZE - 1) : ( ivolt - 1 ) ;
+	int ichan    = (ivolt > fsize) ? (ivolt - fsize - 1) : ( ivolt - 1 ) ;
 
 	//float fcen  = fedge + (0.5 * bw);
 	double fbw  = bw / NCHAN / NGULP;
 	float f     = ichan * fbw;
 	float fecen = fedge + ( 0.5 * fbw );
 
-	float phase  = -1.0 * f * f * dm * TAU * / DMCONSTANT / fecen / fecen / ( fecen + f );
+	/*
+	double TAU        = 6.283185307179586;
+	double DMCONSTANT = 2.41E-10;
+	*/
+
+	float phase  = -1.0 * f * f * dm * 6.283185307179586 / 2.41E-10 / fecen / fecen / ( fecen + f );
 	float cphase = cosf ( phase ); 
 	float sphase = sinf ( phase );
 
@@ -84,7 +116,7 @@ __global__ void dedisperse ( cufftComplex *in, cufftComplex *out, float fedge, f
 	vou.y    = ( vin.x * sphase ) + ( vin.y * cphase );
 }
 
-__global__ void detect_folder ( cufftComplex *in, double *out, double f0, double phase0, double tsamp ) {
+__global__ void detect_folder ( cufftComplex *in, float *out, int *binplan, int *counts ) {
 	/*
 	 * in  is 2 x ( 1 + FFTCOMPLEXSIZE )
 	 * out is NBIN x NCHAN x NPOL
@@ -100,9 +132,6 @@ __global__ void detect_folder ( cufftComplex *in, double *out, double f0, double
 	 * <ogulp,nchan>
 	 * <ogulp//16,nchans//16><16,16>
 	 *
-	 * - replace (f0,phase0,tsamp) with binplan
-	 *  which will be another device array
-	 *
 	 */
 
 	/* thread dimensions */
@@ -111,12 +140,13 @@ __global__ void detect_folder ( cufftComplex *in, double *out, double f0, double
 
 	/* fft indices */
 	size_t iv1, iv2;
+	size_t fsize = 1 + NCHAN*NGULP;
 	iv1   = isamp + NGULP*ichan;
-	iv2   = FFTCOMPLEXSIZE + ( isamp + NGULP*ichan; );
+	iv2   = fsize + ( isamp + NGULP*ichan );
 
 	/* fold indices */
-	double phase  = modf (phase0 + ( f0 * isamp * tsamp ), 1.0);
-	unsigned ibin = (unsigned) (phase * NBIN);
+	int ibin   = binplan [ isamp ];
+	int count  = counts [ ibin ]; 
 	size_t ob;
 	/* (nbin, nchan, npol) */
 	ob    = NPOL*ichan + NPOL*NCHAN*ibin;
@@ -131,21 +161,79 @@ __global__ void detect_folder ( cufftComplex *in, double *out, double f0, double
 	cr = p1.x*p2.x + p1.y*p2.y;
 	ci = p1.y*p2.x - p1.x*p2.y;
 
+	/* artificial scaling */
+	aa /= 1E16;
+	bb /= 1E16;
+	cr /= 1E16;
+	ci /= 1E16;
+
 	/* folding */
-	out [ ob ]     += aa;
-	out [ ob + 1 ] += bb;
-	out [ ob + 2 ] += cr;
-	out [ ob + 3 ] += ci;
+	out [ ob ]     += aa / count;
+	out [ ob + 1 ] += bb / count;
+	out [ ob + 2 ] += cr / count;
+	out [ ob + 3 ] += ci / count;
+}
+__global__ void just_detect ( cufftComplex *in, float *out) {
+	/*
+	 * in  is 2 x ( 1 + FFTCOMPLEXSIZE )
+	 * out is NBIN x NCHAN x NPOL
+	 * layout of in is {1, NCHAN*NGULP, 1, NCHAN*NGULP}
+	 * layout of out is (nsamp, nchan, npol)
+	 *
+	 * dimensions of threadlayout: (freq, time)
+	 * matches the in array
+	 *
+	 * x axis is TIME
+	 * y axis is FREQ
+	 *
+	 * <ogulp,nchan>
+	 * <ogulp//16,nchans//16><16,16>
+	 *
+	 */
+
+	/* thread dimensions */
+	unsigned isamp  = blockIdx.x * blockDim.x + threadIdx.x;
+	unsigned ichan  = blockIdx.y * blockDim.y + threadIdx.y;
+
+	/* fft indices */
+	size_t iv1, iv2;
+	size_t fsize = 1 + NCHAN*NGULP;
+	iv1   = isamp + NGULP*ichan;
+	iv2   = fsize + ( isamp + NGULP*ichan );
+
+	/* (nsamp, nchan, npol) */
+	size_t ob;
+	ob    = NPOL*ichan + NPOL*NCHAN*isamp;
+
+	/* detection */
+	cufftComplex p1 = in [ 1 + iv1 ];
+	cufftComplex p2 = in [ 1 + iv2 ];
+	float aa = 0., bb = 0., cr = 0., ci = 0.;
+
+	aa = p1.x*p1.x + p1.y*p1.y;
+	bb = p2.x*p2.x + p2.y*p2.y;
+	cr = p1.x*p2.x + p1.y*p2.y;
+	ci = p1.y*p2.x - p1.x*p2.y;
+
+	/* folding */
+	out [ ob ]     = aa;
+	out [ ob + 1 ] = bb;
+	out [ ob + 2 ] = cr;
+	out [ ob + 3 ] = ci;
 }
 
 int main( int argc, char *argv[]) {
-	// arguments
+	/* arguments */
 	int opt;
 	int gid = 0;
 	double mjd = -1.0;
 	float fedge = -1.0, bw = 0.0;
 	float dm = 0.0;
-	float fold_period = 0.0;
+	double tsamp       = 0.0;
+	double fold_period = 0.0;
+	double fold_freq   = 0.0;
+	//double fold_phase  = 0.7247695475816727;
+	double fold_phase    = 0.7235016226768494;
 	string pol1_infile_path, pol2_infile_path;
 	string oufile_path;
 	string polyco_file;
@@ -172,7 +260,8 @@ int main( int argc, char *argv[]) {
 				dm  = atof ( optarg );
 				break;
 			case 'c':
-				fold_period  = atof ( optarg );
+				fold_period  = std::stold ( optarg );
+				fold_freq    = 1.0 / fold_period;
 				break;
 			case 'b':
 				bw     = atof ( optarg );
@@ -196,7 +285,7 @@ int main( int argc, char *argv[]) {
 		} // switch
 	} // arg loop
 		
-	// sanitizing arguments
+	/* sanitizing arguments */
 	if ( mjd < 0.0 ) {
 		fprintf(stderr, "MJD not set .. exiting .. ");
 		exit (EXIT_SUCCESS);
@@ -222,18 +311,29 @@ int main( int argc, char *argv[]) {
 		exit (EXIT_SUCCESS);
 	}
 
+	/* tsamp */
+	tsamp   = NCHAN / bw / 1E6;
+
+#if 1
+	printf("[inputs] GPU-id=%d\n", gid);
+	printf("[inputs] mjd=%f fedge=%f bw=%f tsamp_us=%f\n", mjd, fedge, bw, tsamp*1E6);
+	printf("[inputs] period=%f freq=%f phase=%f\n", fold_period, fold_freq, fold_phase);
+	printf("[inputs] in_pol1=%s in_pol2=%s out=%s\n", pol1_infile_path.c_str(), pol2_infile_path.c_str(), oufile_path.c_str());
+#endif
+
 
 	/* file io */
-	auto pol1_infile  = std::ifstream ( pol1_infile_path, std::ios::in | std::ios::binary );
-	auto pol2_infile  = std::ifstream ( pol2_infile_path, std::ios::in | std::ios::binary );
+	std::ifstream pol1_infile ( pol1_infile_path, std::ios::in | std::ios::binary );
+	std::ifstream pol2_infile ( pol2_infile_path, std::ios::in | std::ios::binary );
+	std::ofstream ou_file ( oufile_path, std::ios::out | std::ios::binary );
 	
 	/* file size check */
 	pol1_infile.seekg ( 0, std::ios::end );
-	auto infilesize1 = pol1_infile.tellg ();
+	std::streampos infilesize1 = pol1_infile.tellg ();
 	pol1_infile.seekg ( 0, std::ios::beg );
 
 	pol2_infile.seekg ( 0, std::ios::end );
-	auto infilesize2 = pol2_infile.tellg ();
+	std::streampos infilesize2 = pol2_infile.tellg ();
 	pol2_infile.seekg ( 0, std::ios::beg );
 
 	if ( infilesize1 != infilesize2 ) {
@@ -244,7 +344,9 @@ int main( int argc, char *argv[]) {
 
 	/* main group of variables */
 	unsigned i;
-	unsigned nreads;
+	unsigned nreads = infilesize1 / VREAD;
+	fprintf(stderr, " expected nreads=%d\n", nreads);
+	nreads = 6;
 	unsigned iread;
 
 	/* main allocations */
@@ -264,12 +366,31 @@ int main( int argc, char *argv[]) {
 	int ng     = VREAD;
 	float *volt_float, *volt_d;
 	cufftComplex *fdata_d;
-	double *pdata, *pdata_d;
+	float *pdata, *pdata_d;
+	int *binplan, *binplan_d;
+	int *counts, *counts_d;
 	volt_d     = nullptr;
 	volt_float = nullptr;
 	fdata_d    = nullptr;
 	pdata      = nullptr;
 	pdata_d    = nullptr;
+	binplan    = nullptr;
+	binplan_d  = nullptr;
+
+	/* GPU thread layout */
+	size_t pdata_size = NBIN * NCHAN * NPOL * sizeof(float);
+	//size_t pdata_size = NGULP * NCHAN * NPOL * sizeof(float);
+	dim3 dd_block (256);
+	dim3 dd_grid ( 2 * NCHAN * NGULP / 256);
+	dim3 fold_block (16,16);
+	dim3 fold_grid ( NGULP/16, NCHAN/16 );
+
+	/* folding math */
+	double rphase   = fold_phase;
+	double rdphase  = tsamp * fold_freq; 
+	fprintf(stderr, " rphase=%.14f rdphase=%.14f freq=%.14f\n", rphase, rdphase, fold_freq );
+	int ibin        = 0;
+	std::ofstream bp_file ( "/tmp/sbethapudi_raw/binplan.int", std::ios::out | std::ios::binary );
 
 	/* forward FFT */
 	cures = cufftPlanMany ( &pforward, 1, &ng, NULL, 1, VREAD, NULL, 1, FFTCOMPLEXSIZE, CUFFT_R2C, 2);
@@ -306,7 +427,6 @@ int main( int argc, char *argv[]) {
 	}
 
 	/* fold-subint */
-	size_t pdata_size = NBIN * NCHAN * NPOL * sizeof(double);
 	cudaHostAlloc ( &pdata, pdata_size, cudaHostAllocDefault );
 	if ( pdata == nullptr ) {
 		fprintf(stderr, "cudaHostAlloc of pdata failed\n");
@@ -318,15 +438,38 @@ int main( int argc, char *argv[]) {
 		goto exit;
 	}
 
-	/* GPU thread layout */
-	dim3 dd_block (256);
-	dim3 dd_grid ( 2 * NCHAN * NGULP / 256);
-	dim3 fold_block (16,16);
-	dim3 fold_grid ( NGULP/16, NCHAN/16 );
+	/* binplans  */
+	cudaHostAlloc ( &binplan, NGULP * sizeof(int), cudaHostAllocDefault );
+	if ( binplan == nullptr ) {
+		fprintf(stderr, "cudaHostAlloc of binplan failed\n");
+		goto exit;
+	}
+	cudaMalloc ( &binplan_d,  NGULP * sizeof(int));
+	if ( binplan_d == nullptr ) {
+		fprintf(stderr, "cudaMalloc of binplan_d failed\n");
+		goto exit;
+	}
+
+	/* counts */
+	cudaHostAlloc ( &counts, NBIN * sizeof(int), cudaHostAllocDefault );
+	if ( counts == nullptr ) {
+		fprintf(stderr, "cudaHostAlloc of counts failed\n");
+		goto exit;
+	}
+	cudaMalloc ( &counts_d,  NBIN * sizeof(int));
+	if ( counts_d == nullptr ) {
+		fprintf(stderr, "cudaMalloc of counts_d failed\n");
+		goto exit;
+	}
 
 	/*
 	 * Main work loop
 	 */
+	/* cuda memset */
+	/* ideally at after every write */
+	/* outside loop as i am testing for now */
+	cudaMemset ( (void*) pdata_d, 0, pdata_size );
+
 	for (iread = 0; iread < nreads; iread++) {
 		printf( " iread=%d .. ", iread );
 
@@ -379,6 +522,7 @@ int main( int argc, char *argv[]) {
 
 		// de-dispersion
 		// doit with kernel
+		// bypass while testing
 		dedisperse<<<dd_grid,dd_block>>> ( fdata_d, fdata_d, fedge, bw, dm );
 
 		// backward FFT
@@ -399,6 +543,29 @@ int main( int argc, char *argv[]) {
 		time_ffts = (tstop - tstart) / CLOCKS_PER_SEC;
 #endif
 
+#ifdef TIMING
+		tstart  = clock ();
+#endif
+		/* binplanning */
+		std::fill ( counts, counts + NBIN, 0);
+		for ( i = 0; i < NGULP; i++ ) {
+			ibin          = (int) ( rphase * NBIN );
+
+			binplan [ i ] = ibin;
+			counts [ ibin ]++;
+
+			rphase       += rdphase;
+			if ( rphase >= 1.0 ) rphase = rphase - 1.0;
+		} // binplan
+
+		cuerr   = cudaMemcpy ( binplan_d, binplan, NGULP * sizeof(int), cudaMemcpyHostToDevice );
+		cuerr   = cudaMemcpy ( counts_d, counts, NBIN * sizeof(int), cudaMemcpyHostToDevice );
+
+#ifdef TIMING
+		tstop      = clock ();
+		time_bplan = (tstop - tstart) / CLOCKS_PER_SEC;
+#endif
+
 		// detection
 		/*
 		 * backward FFT
@@ -417,13 +584,12 @@ int main( int argc, char *argv[]) {
 		 * same time-frequency complex pixel of the two pols
 		 */
 
-		/* cuda memset */
-		cudaMemset ( (void*) pdata_d, 0, pdata_size );
 
 #ifdef TIMING
 		tstart  = clock ();
 #endif
-		detect_folder<<<fold_grid,fold_block>>> ( fdata_d, pdata_d, f0, phase0, tsamp );
+		detect_folder<<<fold_grid,fold_block>>> ( fdata_d, pdata_d, binplan_d, counts_d );
+		//just_detect <<<fold_grid,fold_block>>> ( fdata_d, pdata_d );
 #ifdef TIMING
 		tstop    = clock ();
 		time_det = (tstop - tstart) / CLOCKS_PER_SEC;
@@ -435,7 +601,8 @@ int main( int argc, char *argv[]) {
 		tstart  = clock ();
 #endif
 
-		cuerr   = cudaMemcpy ( pdata, pdata_d, pdata_size, cudaMemcpyDeviceToHost );
+		/* copy once after all the folding is done */
+		//cuerr   = cudaMemcpy ( pdata, pdata_d, pdata_size, cudaMemcpyDeviceToHost );
 
 #ifdef TIMING
 		tstop     = clock ();
@@ -451,8 +618,8 @@ int main( int argc, char *argv[]) {
 		tstart  = clock ();
 #endif
 		//gmrtfits_subint_add ( &gf, outfb, OGULP );
-		printf ("  writing subints\n");
 
+		printf ("  writing subints\n");
 #ifdef TIMING
 		tstop      = clock ();
 		time_write = (tstop - tstart) / CLOCKS_PER_SEC;
@@ -462,13 +629,14 @@ int main( int argc, char *argv[]) {
 		printf ("[Timing] read=%.2f ffts=%.2f det=%.2f write=%.2f copies=%.2f\n",time_read, time_ffts, time_det, time_write, time_h2d + time_d2h);
 #endif
 
-		//
-		/*fwrite ( gf.data, sizeof(char), OGULP * NCHAN * NPOL, tou1 );*/
-		/*fwrite ( gf.scales, sizeof(float), NCHAN * NPOL, tou2 );*/
-		/*fwrite ( gf.offsets, sizeof(float), NCHAN * NPOL, tou3 );*/
-		//
-		/*goto exit;*/
+		/* exit while testing */
+		// goto exit;
 	}
+	cuerr   = cudaMemcpy ( pdata, pdata_d, pdata_size, cudaMemcpyDeviceToHost );
+
+	/* dump pdata */
+	ou_file.write ( (char*) pdata, pdata_size );
+	bp_file.write ( (char*) binplan, NGULP * sizeof ( int ) );
 
 exit:
 	if ( pdata_d )    cudaFree ( pdata_d );
@@ -476,6 +644,10 @@ exit:
 	if ( fdata_d )    cudaFree ( fdata_d );
 	if ( volt_float ) cudaFreeHost ( volt_float );
 	if ( volt_d )     cudaFree ( volt_d );
+	if ( binplan )    cudaFreeHost ( binplan );
+	if ( binplan_d )  cudaFree ( binplan_d );
+	if ( counts )     cudaFreeHost ( counts );
+	if ( counts_d )   cudaFree ( counts_d );
 
 	/* destroy cufft plans */
 	cures = cufftDestroy ( pforward );
