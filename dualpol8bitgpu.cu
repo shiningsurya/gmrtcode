@@ -238,8 +238,8 @@ int main( int argc, char *argv[]) {
 
 	//-------------------------//
 	gmrtfits_t gf;
-	gmrtfits_prepare ( &gf, oufile_path, mjd, NPOL, NCHAN, fedge, bw, NSBLK, INTEGRATION, 8 );
-	gmrtfits_create ( &gf );
+	gmrtfits_search_prepare ( &gf, oufile_path, mjd, NPOL, NCHAN, fedge, bw, NSBLK, INTEGRATION, 8 );
+	gmrtfits_open ( &gf );
 	//-------------------------//
 
 	// FFTW
@@ -299,7 +299,7 @@ int main( int argc, char *argv[]) {
 	}
 
 	printf (" prepared plans .. starting ... total nreads=%d\n", nreads);
-	gmrtfits_subint_open ( &gf );
+	gmrtfits_data_table ( &gf );
 
 	for (iread = 0; iread < nreads; iread++) {
 		printf( " iread=%d .. ", iread );
@@ -426,7 +426,7 @@ int main( int argc, char *argv[]) {
 #ifdef TIMING
 		tstart  = clock ();
 #endif
-		gmrtfits_subint_add ( &gf, outfb, OGULP );
+		gmrtfits_search_add ( &gf, outfb, OGULP );
 		printf ("  writing subints\n");
 
 #ifdef TIMING
