@@ -80,10 +80,5 @@ void gmrtfits_close ( gmrtfits_t *fits );
  *
  * */
 void gmrtfits_search_add ( gmrtfits_t *fits, real_t *data, unsigned int ngulp );
-void gmrtfits_fold_add ( gmrtfits_t *fits, deal_t *data, unsigned nturns, double period );
-
-// private methods
-
-/*void normalize_data ( gmrtfits_t *fits, u16_t *data );*/
-/*void normalize_data ( gmrtfits_t *fits, real_t *data );*/
+void gmrtfits_fold_add ( gmrtfits_t *fits, real_t *data, double tsubint, double period );
 

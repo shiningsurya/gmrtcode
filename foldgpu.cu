@@ -27,6 +27,15 @@
 #define NBIN 4096
 #define NGULP 65536
 /*
+ * How to allow input-argument subintegration length?
+ * - NGULP has to be large to make GPU processing effective. 
+ *   Too large of NGULP means large subintegration length
+ * - 
+ *
+ */
+
+
+/*
 constexpr int NPOL                     = 4;
 constexpr int NCHAN                    = 2048;
 constexpr int NBIN                     = 1024;
@@ -75,45 +84,45 @@ __global__ void dedisperse ( cufftComplex *in, cufftComplex *out, float fedge, f
 	/*
 	 * in is [2xFFTCOMPLEXSIZE] of {pol1 ... pol2}
 	 * ou is [2xFFTCOMPLEXSIZE] of {pol1 ... pol2}
+	 * FFTCOMPLEXSIZE = 1 + NGULP
+	 * element access needs to care about the DC term
 	 *
-	 * per pol, R2C is FFTCOMPLEXSIZE=1+NCHAN*NGULP
-	 * ignore DC term
-	 * remaining=NCHAN*NGULP
-	 * 
-	 * DC | fedge | -------- > | fedge + bw
-	 * 0  |    1  | ...........| NCHAN*NGULP
-	 *
-	 * ichan should go from 
-	 *    |    0  | ...........| NCHAN*NGULP - 1
-	 *
+	 * thread layout is aligned with non-DC fourier terms
+	 * for every pol; {NGULP, 2}
 	 *
 	 *
 	 */
 	
-	size_t ivolt = blockIdx.x * blockDim.x + threadIdx.x;
-	size_t fsize = 1 + NCHAN*NGULP;
-
-	int ichan    = (ivolt > fsize) ? (ivolt - fsize - 1) : ( ivolt - 1 ) ;
+	size_t ichan = blockIdx.x * blockDim.x + threadIdx.x;
+	size_t  ipol = threadIdx.y;
+	/* index in fdata_d */
+	size_t ivolt = 1 + ichan + ipol*(NGULP+1);
 
 	//float fcen  = fedge + (0.5 * bw);
-	double fbw  = bw / NCHAN / NGULP;
-	float f     = ichan * fbw;
-	float fecen = fedge + ( 0.5 * fbw );
+	double fbw   = bw / NGULP;
+	double f     = ichan * fbw;
 
 	/*
 	double TAU        = 6.283185307179586;
 	double DMCONSTANT = 2.41E-10;
 	*/
 
-	float phase  = -1.0 * f * f * dm * 6.283185307179586 / 2.41E-10 / fecen / fecen / ( fecen + f );
-	float cphase = cosf ( phase ); 
-	float sphase = sinf ( phase );
+	double phase  = -1.0 * f * f * dm * 6.283185307179586 * 4.148808E9 / fedge / fedge / ( fedge + f );
+	float  cphase = cosf ( phase ); 
+	float  sphase = sinf ( phase );
 
 	cufftComplex vin = in  [ ivolt ];
-	cufftComplex vou = out [ ivolt ];
+	cufftComplex vou;
 
-	vou.x    = ( vin.x * cphase ) - ( vin.y * sphase );
-	vou.y    = ( vin.x * sphase ) + ( vin.y * cphase );
+	float rx    = ( vin.x * cphase ) - ( vin.y * sphase );
+	float ry    = ( vin.x * sphase ) + ( vin.y * cphase );
+
+	vou.x       = rx;
+	vou.y       = ry;
+	//vou.x       = 0.0;
+	//vou.y       = 0.0;
+
+	out [ ivolt ]    = vou;
 }
 
 __global__ void detect_folder ( cufftComplex *in, float *out, int *binplan, int *counts ) {
@@ -154,8 +163,14 @@ __global__ void detect_folder ( cufftComplex *in, float *out, int *binplan, int 
 	/* detection */
 	cufftComplex p1 = in [ 1 + iv1 ];
 	cufftComplex p2 = in [ 1 + iv2 ];
-	float aa = 0., bb = 0., cr = 0., ci = 0.;
+	
+	/* *
+	 * Calibration can be done on OTF here
+	 * p1, p2 = inverse of single axis jones matrix
+	 * ichan is the channel index
+	 * */
 
+	float aa = 0., bb = 0., cr = 0., ci = 0.;
 	aa = p1.x*p1.x + p1.y*p1.y;
 	bb = p2.x*p2.x + p2.y*p2.y;
 	cr = p1.x*p2.x + p1.y*p2.y;
@@ -390,7 +405,8 @@ int main( int argc, char *argv[]) {
 	double rdphase  = tsamp * fold_freq; 
 	fprintf(stderr, " rphase=%.14f rdphase=%.14f freq=%.14f\n", rphase, rdphase, fold_freq );
 	int ibin        = 0;
-	std::ofstream bp_file ( "/tmp/sbethapudi_raw/binplan.int", std::ios::out | std::ios::binary );
+
+//	std::ofstream bp_file ( "/tmp/sbethapudi_raw/binplan.int", std::ios::out | std::ios::binary );
 
 	/* forward FFT */
 	cures = cufftPlanMany ( &pforward, 1, &ng, NULL, 1, VREAD, NULL, 1, FFTCOMPLEXSIZE, CUFFT_R2C, 2);
@@ -461,6 +477,16 @@ int main( int argc, char *argv[]) {
 		fprintf(stderr, "cudaMalloc of counts_d failed\n");
 		goto exit;
 	}
+
+	/**
+	 * Setup output file
+	 **/
+	gmrtfits_t fits;
+	gmrtfits_fold_prepare ( &gf, oufile_path, mjd, NPOL, NCHAN, fedge, bw, NBIN, fold_period );
+	gmrtfits_open ( &gf );
+	gmrtfits_data_table ( &gf );
+
+	double tsubint, offs_sub, read_mjd;
 
 	/*
 	 * Main work loop
@@ -546,6 +572,16 @@ int main( int argc, char *argv[]) {
 #ifdef TIMING
 		tstart  = clock ();
 #endif
+		/* period updating */
+		printf (" [update period] .. ");
+		/**
+		 * mid-mjd of current iread
+		 * start_mjd + ( ( iread + 0.5 )*NGULP*tsamp/86400 )
+		 **/
+		tsubint  = NGULP * tsamp;
+		offs_sub = (iread + 0.5) * tsubint;
+
+
 		/* binplanning */
 		std::fill ( counts, counts + NBIN, 0);
 		for ( i = 0; i < NGULP; i++ ) {
@@ -601,8 +637,7 @@ int main( int argc, char *argv[]) {
 		tstart  = clock ();
 #endif
 
-		/* copy once after all the folding is done */
-		//cuerr   = cudaMemcpy ( pdata, pdata_d, pdata_size, cudaMemcpyDeviceToHost );
+		cuerr   = cudaMemcpy ( pdata, pdata_d, pdata_size, cudaMemcpyDeviceToHost );
 
 #ifdef TIMING
 		tstop     = clock ();
@@ -617,7 +652,7 @@ int main( int argc, char *argv[]) {
 #ifdef TIMING
 		tstart  = clock ();
 #endif
-		//gmrtfits_subint_add ( &gf, outfb, OGULP );
+		gmrtfits_fold_add ( &gf, pdata, tsubint, fold_period );
 
 		printf ("  writing subints\n");
 #ifdef TIMING
@@ -632,11 +667,6 @@ int main( int argc, char *argv[]) {
 		/* exit while testing */
 		// goto exit;
 	}
-	cuerr   = cudaMemcpy ( pdata, pdata_d, pdata_size, cudaMemcpyDeviceToHost );
-
-	/* dump pdata */
-	ou_file.write ( (char*) pdata, pdata_size );
-	bp_file.write ( (char*) binplan, NGULP * sizeof ( int ) );
 
 exit:
 	if ( pdata_d )    cudaFree ( pdata_d );
@@ -658,6 +688,8 @@ exit:
 	if ( cures != CUFFT_SUCCESS ) {
 		printf (" [!!] Plan not destroyed\n");
 	}
+
+	gmrtfits_close ( &gf );
 
 	return 0;
 }

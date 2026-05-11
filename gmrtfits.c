@@ -437,7 +437,7 @@ void gmrtfits_search_add ( gmrtfits_t *fits, real_t *data, unsigned int ngulp ) 
 #endif
 } // search_add
 
-void gmrtfits_fold_add ( gmrtfits_t *fits, deal_t *data, unsigned nturns, double period ) {
+void gmrtfits_fold_add ( gmrtfits_t *fits, deal_t *data, double tsubint, double period ) {
 	/* data is (nbin, nchan, npol)  */
 	
 	int colnum  = 0;
@@ -530,12 +530,12 @@ void gmrtfits_fold_add ( gmrtfits_t *fits, deal_t *data, unsigned nturns, double
 
 		// TSUBINT
 		colnum  = 2;
-		dval    = nturns * fits->period;
+		dval    = tsubint;
 		fits_write_col( fits->fits, TDOUBLE, colnum, fits->nrow, 1, 1, &dval, &fits->status );
 		
 		// OFFS_SUB
 		colnum  = 3;
-		dval    =  (fits->nrow + 0.5) * nturns * fits->period;
+		dval    =  (fits->nrow + 0.5) * tsubint;
 		fits_write_col( fits->fits, TDOUBLE, colnum, fits->nrow, 1, 1, &dval, &fits->status );
 		// middle of the subint
 		
