@@ -40,7 +40,7 @@ unsigned long VREAD          = 2 * NGULP;
 unsigned long FFTCOMPLEXSIZE = 1 + NGULP;
 
 using std::string;
-using bin_type = unsigned long;
+using bin_type = int;
 
 #ifdef TIMING
 clock_t tstart, tstop;
@@ -75,11 +75,12 @@ __global__ void dedisperse ( cufftComplex *in, cufftComplex *out, float fedge, f
 	/*
 	 * in is [2xFFTCOMPLEXSIZE] of {pol1 ... pol2}
 	 * ou is [2xFFTCOMPLEXSIZE] of {pol1 ... pol2}
+	 * FFTCOMPLEXSIZE = 1 + NGULP
+	 * element access needs to care about the DC term
 	 *
 	 * thread layout is aligned with non-DC fourier terms
 	 * for every pol; {NGULP, 2}
 	 *
-	 * element access needs to care about the DC term
 	 *
 	 */
 	
@@ -89,26 +90,32 @@ __global__ void dedisperse ( cufftComplex *in, cufftComplex *out, float fedge, f
 	size_t ivolt = 1 + ichan + ipol*(NGULP+1);
 
 	//float fcen  = fedge + (0.5 * bw);
-	double fbw  = bw / NGULP;
-	float f     = ichan * fbw;
-	float fecen = fedge + ( 0.5 * fbw );
+	double fbw   = bw / NGULP;
+	double f     = ichan * fbw;
 
 	/*
 	double TAU        = 6.283185307179586;
 	double DMCONSTANT = 2.41E-10;
 	*/
 
-	float phase  = -1.0 * f * f * dm * 6.283185307179586 / 2.41E-10 / fecen / fecen / ( fecen + f );
-	float cphase = cosf ( phase ); 
-	float sphase = sinf ( phase );
+	double phase  = -1.0 * f * f * dm * 6.283185307179586 * 4.148808E9 / fedge / fedge / ( fedge + f );
+	float  cphase = cosf ( phase ); 
+	float  sphase = sinf ( phase );
 
 	cufftComplex vin = in  [ ivolt ];
-	cufftComplex vou = out [ ivolt ];
+	cufftComplex vou;
 
-	vou.x    = ( vin.x * cphase ) - ( vin.y * sphase );
-	vou.y    = ( vin.x * sphase ) + ( vin.y * cphase );
+	float rx    = ( vin.x * cphase ) - ( vin.y * sphase );
+	float ry    = ( vin.x * sphase ) + ( vin.y * cphase );
+
+	vou.x       = rx;
+	vou.y       = ry;
+	//vou.x       = 0.0;
+	//vou.y       = 0.0;
+
+	out [ ivolt ]    = vou;
 }
-__global__ void volt_folder ( float *in, float *out, int *binplan, int *counts ) {
+__global__ void volt_folder ( cufftReal *in, float *out, int *binplan, int *counts ) {
 	/*
 	 * in is [2xVREAD] of {pol1 ... pol2}
 	 * ou is [2XNBIN]  of {pol1 ... pol2}
@@ -134,7 +141,34 @@ __global__ void volt_folder ( float *in, float *out, int *binplan, int *counts )
 	size_t obin  = ibin  + ipol*NBIN;
 
 	/* folding */
-	out [ obin ]    += in [ isamp ] / count;
+//	out [ obin ]    += in [ isamp ] / count;
+	/* FFT -> IFFT scaling */
+	out [ obin ]    += in [ isamp ] / count / 2 / NGULP;
+}
+__global__ void copywhatread ( cufftReal *in, float *out ) {
+	/*
+	 * to see how is it being read
+   *
+	 * in is [2xVREAD] of {pol1 ... pol2}
+	 * ou is [2XNBIN]  of {pol1 ... pol2}
+	 *
+	 * thread layout is {NBIN, 2}
+	 * matches the in array
+	 *
+	 * binplan is int[VREAD]
+	 * counts  is int[NBIN]
+	 */
+
+	/* natural indices */
+	size_t  ibin = blockIdx.x * blockDim.x + threadIdx.x;
+	size_t  ipol = threadIdx.y;
+
+	/* data indices */
+	size_t isamp = ibin  + ipol*2*NGULP;
+	size_t obin  = ibin  + ipol*NBIN;
+
+	/* folding */
+	out [ obin ] = in [ isamp ];
 }
 __global__ void just_detect ( cufftComplex *in, float *out) {
 	/*
@@ -309,6 +343,7 @@ int main( int argc, char *argv[]) {
 	unsigned i;
 	unsigned nreads = infilesize1 / VREAD;
 	fprintf(stderr, " expected nreads=%d\n", nreads);
+	nreads = 6;
 	nreads = 1;
 	unsigned iread;
 
@@ -327,6 +362,7 @@ int main( int argc, char *argv[]) {
 
 	/* cuda pointers */
 	int ng     = VREAD;
+	int nh     = VREAD;
 	cufftReal *volt_float, *volt_d;
 	cufftComplex *fdata_d;
 	float *pdata, *pdata_d;
@@ -339,16 +375,20 @@ int main( int argc, char *argv[]) {
 	pdata_d    = nullptr;
 	binplan    = nullptr;
 	binplan_d  = nullptr;
-
+	
 	/* GPU thread layout */
 
 	/* voltage level threads = (sample, pol) */
-	dim3 fold_block (256);
-	dim3 fold_grid ( NGULP / 256, 2 );
+	dim3 fold_block (256, 2);
+	dim3 fold_grid ( VREAD / 256 );
+
+	/* to test reading -- it works  */
+	dim3 take_block (256, 2);
+	dim3 take_grid ( NBIN / 256 );
 	/* FFT level threads = (sample-1, pol) */
 	/* ignore the DC term => FFTCOMPLEXSIZE - 1 = NGULP */
-	dim3 dd_block (256);
-	dim3 dd_grid (NGULP/256, 2);
+	dim3 dd_block (256, 2);
+	dim3 dd_grid (NGULP/256);
 	/* thread layout is the same */
 
 	/* folding math */
@@ -359,12 +399,14 @@ int main( int argc, char *argv[]) {
 	std::ofstream bp_file ( "/tmp/sbethapudi_raw/binplan.int", std::ios::out | std::ios::binary );
 
 	/* forward FFT */
+	ng     = VREAD;
 	cures = cufftPlanMany ( &pforward, 1, &ng, NULL, 1, VREAD, NULL, 1, FFTCOMPLEXSIZE, CUFFT_R2C, 2);
 	if ( cures != CUFFT_SUCCESS ) {
 			printf (" [!!] Forward FFT plan failed code=%d\n", cures);
 			goto exit;
 	}
 	/* backward FFT */
+	ng     = VREAD;
 	cures = cufftPlanMany (&pbackward, 1, &ng, NULL, 1, FFTCOMPLEXSIZE, NULL, 1, VREAD, CUFFT_C2R, 2);
 	if ( cures != CUFFT_SUCCESS ) {
 			printf (" [!!] Backward FFT plan failed code=%d\n", cures);
@@ -404,12 +446,12 @@ int main( int argc, char *argv[]) {
 	}
 
 	/* binplans  */
-	cudaHostAlloc ( &binplan, NGULP * sizeof(int), cudaHostAllocDefault );
+	cudaHostAlloc ( &binplan, VREAD * sizeof(int), cudaHostAllocDefault );
 	if ( binplan == nullptr ) {
 		fprintf(stderr, "cudaHostAlloc of binplan failed\n");
 		goto exit;
 	}
-	cudaMalloc ( &binplan_d,  NGULP * sizeof(int));
+	cudaMalloc ( &binplan_d,  VREAD * sizeof(int));
 	if ( binplan_d == nullptr ) {
 		fprintf(stderr, "cudaMalloc of binplan_d failed\n");
 		goto exit;
@@ -435,6 +477,7 @@ int main( int argc, char *argv[]) {
 	/* outside loop as i am testing for now */
 	cudaMemset ( (void*) pdata_d, 0, 2 * NBIN * sizeof(float) );
 
+
 	for (iread = 0; iread < nreads; iread++) {
 		printf( " iread=%d .. ", iread );
 
@@ -450,6 +493,11 @@ int main( int argc, char *argv[]) {
 		for (i = 0; i < VREAD; i++ ) {
 			volt_float[i]         = (cufftReal) pol1_volt_read[i];
 			volt_float[VREAD + i] = (cufftReal) pol2_volt_read[i];
+		}
+
+		{
+			//std::ofstream vf ("/tmp/sbethapudi_raw/volt_read.raw", std::ios::out | std::ios::binary); 
+			//vf.write ( (char*) volt_float, 2 * VREAD * sizeof (float) );
 		}
 
 #ifdef TIMING
@@ -475,7 +523,6 @@ int main( int argc, char *argv[]) {
 #endif
 
 		// forward FFT
-		/*fftw_execute ( pforward );*/
 		cures   = cufftExecR2C ( pforward, volt_d, fdata_d );
 		if ( cures != CUFFT_SUCCESS ) {
 			printf (" [!!] Forward FFT failed code=%d\n", cures);
@@ -486,11 +533,13 @@ int main( int argc, char *argv[]) {
 		// de-dispersion
 		// doit with kernel
 		// bypass while testing
+		// dm  = 0.0;
 		dedisperse<<<dd_grid,dd_block>>> ( fdata_d, fdata_d, fedge, bw, dm );
 
 		// backward FFT
 		// need to do two calls
 		cures   = cufftExecC2R ( pbackward, fdata_d, volt_d );
+		/* scaling by 1.0 / N, where N = VREAD */
 		if ( cures != CUFFT_SUCCESS ) {
 			printf (" [!!] Backward FFT failed\n");
 		}
@@ -505,9 +554,16 @@ int main( int argc, char *argv[]) {
 #ifdef TIMING
 		tstart  = clock ();
 #endif
+		/* debugging copy */
+		cuerr   = cudaMemcpy ( volt_float, volt_d, 2 * VREAD * sizeof(cufftReal), cudaMemcpyDeviceToHost );
+		{
+			std::ofstream vf ("/tmp/sbethapudi_raw/volt_processed.raw", std::ios::out | std::ios::binary); 
+			vf.write ( (char*) volt_float, 2 * VREAD * sizeof (float) );
+		}
+
 		/* binplanning */
 		std::fill ( counts, counts + NBIN, 0);
-		for ( i = 0; i < NGULP; i++ ) {
+		for ( i = 0; i < VREAD; i++ ) {
 			ibin          = (bin_type) ( rphase * NBIN );
 
 			binplan [ i ] = ibin;
@@ -515,9 +571,10 @@ int main( int argc, char *argv[]) {
 
 			rphase       += rdphase;
 			if ( rphase >= 1.0 ) rphase = rphase - 1.0;
+
 		} // binplan
 
-		cuerr   = cudaMemcpy ( binplan_d, binplan, NGULP * sizeof(bin_type), cudaMemcpyHostToDevice );
+		cuerr   = cudaMemcpy ( binplan_d, binplan, VREAD * sizeof(bin_type), cudaMemcpyHostToDevice );
 		cuerr   = cudaMemcpy ( counts_d, counts, NBIN * sizeof(int), cudaMemcpyHostToDevice );
 
 #ifdef TIMING
@@ -528,7 +585,8 @@ int main( int argc, char *argv[]) {
 #ifdef TIMING
 		tstart  = clock ();
 #endif
-		volt_folder<<<fold_grid,fold_block>>> ( fdata_d, pdata_d, binplan_d, counts_d );
+		volt_folder<<<fold_grid,fold_block>>> ( volt_d, pdata_d, binplan_d, counts_d );
+		//copywhatread<<<take_grid,take_block>>> ( volt_d, pdata_d );
 		//just_detect <<<fold_grid,fold_block>>> ( fdata_d, pdata_d );
 #ifdef TIMING
 		tstop    = clock ();
@@ -556,8 +614,8 @@ int main( int argc, char *argv[]) {
 		//gmrtfits_subint_add ( &gf, outfb, OGULP );
 		/* write to file */
 		/* dump pdata */
-		ou_file.write ( (char*) pdata, 2 * NBIN * sizeof (float) );
-		bp_file.write ( (char*) binplan, NGULP * sizeof ( int ) );
+//		ou_file.write ( (char*) pdata, 2 * NBIN * sizeof (float) );
+		bp_file.write ( (char*) binplan, VREAD * sizeof ( int ) );
 
 		printf ("  writing subints\n");
 #ifdef TIMING
@@ -572,6 +630,7 @@ int main( int argc, char *argv[]) {
 		/* exit while testing */
 		// goto exit;
 	}
+	ou_file.write ( (char*) pdata, 2 * NBIN * sizeof (float) );
 
 
 exit:
