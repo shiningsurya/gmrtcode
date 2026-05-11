@@ -19,6 +19,10 @@
 #include <time.h>
 #endif
 
+extern "C" {
+#	include "gmrtfits.h"
+}
+
 /* gpu */
 #include <cufft.h>
 
@@ -481,8 +485,8 @@ int main( int argc, char *argv[]) {
 	/**
 	 * Setup output file
 	 **/
-	gmrtfits_t fits;
-	gmrtfits_fold_prepare ( &gf, oufile_path, mjd, NPOL, NCHAN, fedge, bw, NBIN, fold_period );
+	gmrtfits_t gf;
+	gmrtfits_fold_prepare ( &gf, oufile_path.c_str(), mjd, NPOL, NCHAN, fedge, bw, NBIN, fold_period );
 	gmrtfits_open ( &gf );
 	gmrtfits_data_table ( &gf );
 
