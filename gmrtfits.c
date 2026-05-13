@@ -119,7 +119,16 @@ void gmrtfits_open ( gmrtfits_t *fits ) {
 	long   lval  = 0;
 
 	fits_create_file(&fits->fits, fits->filename, &fits->status);
+	if ( fits->status ) {
+		printf (" 0 at gmrtfits_create ...\n");
+		fits_report_error(stderr, fits->status);
+	}
 	fits_create_img(fits->fits, bitpix, naxis, naxes, &fits->status);
+
+	if ( fits->status ) {
+		printf (" 1 at gmrtfits_create ...\n");
+		fits_report_error(stderr, fits->status);
+	}
 
 	ival = 1;
 	fits_update_key(fits->fits, TSTRING, "HDRVER","5.4gmrt","Header version, modified for uGMRT", &fits->status);
@@ -157,6 +166,11 @@ void gmrtfits_open ( gmrtfits_t *fits ) {
 		fits_update_key (fits->fits, TSTRING, "OBS_MODE", "PSR", "SEARCH, PSR or CAL", &fits->status );
 	else
 		fprintf ( stderr, " fits->obsmode not understood \n" );
+
+	if ( fits->status ) {
+		printf (" 2 at gmrtfits_create ...\n");
+		fits_report_error(stderr, fits->status);
+	}
 
 	// frequency
 	dval = fits->center_freqs [ fits->nchan / 2 ];

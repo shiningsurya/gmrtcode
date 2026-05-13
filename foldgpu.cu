@@ -28,7 +28,7 @@ extern "C" {
 
 #define NPOL 4
 #define NCHAN 2048
-#define NBIN 4096
+#define NBIN 1024
 #define NGULP 65536
 /*
  * How to allow input-argument subintegration length?
@@ -344,7 +344,7 @@ int main( int argc, char *argv[]) {
 	/* file io */
 	std::ifstream pol1_infile ( pol1_infile_path, std::ios::in | std::ios::binary );
 	std::ifstream pol2_infile ( pol2_infile_path, std::ios::in | std::ios::binary );
-	std::ofstream ou_file ( oufile_path, std::ios::out | std::ios::binary );
+	//std::ofstream ou_file ( oufile_path, std::ios::out | std::ios::binary );
 	
 	/* file size check */
 	pol1_infile.seekg ( 0, std::ios::end );
@@ -365,7 +365,7 @@ int main( int argc, char *argv[]) {
 	unsigned i;
 	unsigned nreads = infilesize1 / VREAD;
 	fprintf(stderr, " expected nreads=%d\n", nreads);
-	nreads = 6;
+	nreads = 100;
 	unsigned iread;
 
 	/* main allocations */
@@ -409,6 +409,16 @@ int main( int argc, char *argv[]) {
 	double rdphase  = tsamp * fold_freq; 
 	fprintf(stderr, " rphase=%.14f rdphase=%.14f freq=%.14f\n", rphase, rdphase, fold_freq );
 	int ibin        = 0;
+
+	/**
+	 * Setup output file
+	 **/
+	gmrtfits_t gf;
+	gmrtfits_fold_prepare ( &gf, oufile_path.c_str(), mjd, NPOL, NCHAN, fedge, bw, NBIN, fold_period );
+	gmrtfits_open ( &gf );
+	gmrtfits_data_table ( &gf );
+	/* early exit */
+	if ( gf.status > 0) goto exit;
 
 //	std::ofstream bp_file ( "/tmp/sbethapudi_raw/binplan.int", std::ios::out | std::ios::binary );
 
@@ -482,24 +492,11 @@ int main( int argc, char *argv[]) {
 		goto exit;
 	}
 
-	/**
-	 * Setup output file
-	 **/
-	gmrtfits_t gf;
-	gmrtfits_fold_prepare ( &gf, oufile_path.c_str(), mjd, NPOL, NCHAN, fedge, bw, NBIN, fold_period );
-	gmrtfits_open ( &gf );
-	gmrtfits_data_table ( &gf );
-
 	double tsubint, offs_sub, read_mjd;
 
 	/*
 	 * Main work loop
 	 */
-	/* cuda memset */
-	/* ideally at after every write */
-	/* outside loop as i am testing for now */
-	cudaMemset ( (void*) pdata_d, 0, pdata_size );
-
 	for (iread = 0; iread < nreads; iread++) {
 		printf( " iread=%d .. ", iread );
 
@@ -553,7 +550,7 @@ int main( int argc, char *argv[]) {
 		// de-dispersion
 		// doit with kernel
 		// bypass while testing
-		dedisperse<<<dd_grid,dd_block>>> ( fdata_d, fdata_d, fedge, bw, dm );
+		//dedisperse<<<dd_grid,dd_block>>> ( fdata_d, fdata_d, fedge, bw, dm );
 
 		// backward FFT
 		// need to do two calls
@@ -628,6 +625,8 @@ int main( int argc, char *argv[]) {
 #ifdef TIMING
 		tstart  = clock ();
 #endif
+		/* zero out before folding */
+		cudaMemset ( (void*) pdata_d, 0, pdata_size );
 		detect_folder<<<fold_grid,fold_block>>> ( fdata_d, pdata_d, binplan_d, counts_d );
 		//just_detect <<<fold_grid,fold_block>>> ( fdata_d, pdata_d );
 #ifdef TIMING
